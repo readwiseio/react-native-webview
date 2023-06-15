@@ -410,7 +410,19 @@ NSString *const CUSTOM_SELECTOR = @"_CUSTOM_SELECTOR_";
 #else
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
 #endif // !TARGET_OS_OSX
-
+#ifdef DEBUG
+// We have to do both the #if check and the @available check. The first gates compilation when compiling on older
+// versions of Xcode (14.2 and lower, to be specific). The @available() checks ensure we're _running_ on a supported
+// OS.
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130300 || \
+    __IPHONE_OS_VERSION_MAX_ALLOWED >= 160400 || \
+    __TV_OS_VERSION_MAX_ALLOWED >= 160400
+    // https://webkit.org/blog/13936/enabling-the-inspection-of-web-content-in-apps/
+    if (@available(macos 13.3, ios 16.4, tvOS 16.4, *)) {
+        _webView.inspectable = YES;
+    }
+#endif
+#endif
     [self setBackgroundColor: _savedBackgroundColor];
 #if !TARGET_OS_OSX
     _webView.scrollView.delegate = self;
