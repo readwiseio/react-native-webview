@@ -270,7 +270,7 @@ export interface NativeCommands {
   clearCache: (viewRef: React.ElementRef<HostComponent<NativeProps>>, includeDiskFiles: boolean) => void;
   clearHistory: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
   // !Android Only
-  setTintColor: (viewRef: React.ElementRef<HostComponent<NativeProps>>, red: number, blue: number, green: number, alpha: number) => void;
+  setTintColor: (viewRef: React.ElementRef<HostComponent<NativeProps>>, red: Double, blue: Double, green: Double, alpha: Double) => void;
 }
 
 export const Commands = codegenNativeCommands<NativeCommands>({
