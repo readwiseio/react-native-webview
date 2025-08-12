@@ -578,10 +578,8 @@ RCTAutoInsetsProtocol>
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
   if (@available(iOS 16.0, *)) {
-    if (self.menuItems != nil) {
-      _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
-      [self addInteraction:_editMenuInteraction];
-    }
+    _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
+    [self addInteraction:_editMenuInteraction];
   }
 #endif
 
@@ -894,23 +892,6 @@ RCTAutoInsetsProtocol>
 -(void)setMenuItems:(NSArray<NSDictionary *> *)menuItems {
     _menuItems = menuItems;
     _webView.menuItems = menuItems;
-    
-    // Add UIEditMenuInteraction support for iOS 16+
-#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
-    if (@available(iOS 16.0, *)) {
-        // Remove existing interaction if any
-        if (_editMenuInteraction) {
-            [self removeInteraction:_editMenuInteraction];
-            _editMenuInteraction = nil;
-        }
-        
-        // Add new interaction if menuItems exist
-        if (menuItems && menuItems.count > 0) {
-            _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
-            [self addInteraction:_editMenuInteraction];
-        }
-    }
-#endif
 }
 
 -(void)setSuppressMenuItems:(NSArray<NSString *> *)suppressMenuItems {
