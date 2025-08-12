@@ -248,7 +248,7 @@ RCTAutoInsetsProtocol>
         return;
     }
     if (@available(iOS 16.0, *)) {
-      if (self.menuItems.count == 0) {
+      if (self.menuItems.count == 0 || !_editMenuInteraction) {
         return;
       }
       CGPoint location = [pressSender locationInView:self];
@@ -583,8 +583,10 @@ RCTAutoInsetsProtocol>
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
   if (@available(iOS 16.0, *)) {
-    _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
-    [self addInteraction:_editMenuInteraction];
+    if (self.menuItems != nil && self.menuItems.count > 0) {
+      _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
+      [self addInteraction:_editMenuInteraction];
+    }
   }
 #endif
 
@@ -897,6 +899,22 @@ RCTAutoInsetsProtocol>
 -(void)setMenuItems:(NSArray<NSDictionary *> *)menuItems {
     _menuItems = menuItems;
     _webView.menuItems = menuItems;
+    
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
+    if (@available(iOS 16.0, *)) {
+        if (menuItems != nil && menuItems.count > 0) {
+            if (!_editMenuInteraction) {
+                _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
+                [self addInteraction:_editMenuInteraction];
+            }
+        } else {
+            if (_editMenuInteraction) {
+                [self removeInteraction:_editMenuInteraction];
+                _editMenuInteraction = nil;
+            }
+        }
+    }
+#endif
 }
 
 -(void)setSuppressMenuItems:(NSArray<NSString *> *)suppressMenuItems {
