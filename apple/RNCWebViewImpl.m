@@ -247,27 +247,33 @@ RCTAutoInsetsProtocol>
     if (pressSender.state != UIGestureRecognizerStateEnded || !self.menuItems) {
         return;
     }
-    // When a long press ends, bring up our custom UIMenu if defined
-    if (self.menuItems.count == 0) {
+    if (@available(iOS 16.0, *)) {
+      CGPoint location = [pressSender locationInView:self];
+      UIEditMenuConfiguration *config = [UIEditMenuConfiguration configurationWithIdentifier:nil sourcePoint:location];
+      [_editMenuInteraction presentEditMenuWithConfiguration:config];
+    } else {
+      // When a long press ends, bring up our custom UIMenu if defined
+      if (self.menuItems.count == 0) {
         UIMenuController *menuController = [UIMenuController sharedMenuController];
         menuController.menuItems = nil;
-        [menuController setMenuVisible:NO animated:YES];
+        [menuController showMenuFromView:self rect:self.bounds];
         return;
-    }
-    UIMenuController *menuController = [UIMenuController sharedMenuController];
-    NSMutableArray *menuControllerItems = [NSMutableArray arrayWithCapacity:self.menuItems.count];
+      }
 
-    for(NSDictionary *menuItem in self.menuItems) {
-      NSString *menuItemLabel = [RCTConvert NSString:menuItem[@"label"]];
-      NSString *menuItemKey = [RCTConvert NSString:menuItem[@"key"]];
-      NSString *sel = [NSString stringWithFormat:@"%@%@", CUSTOM_SELECTOR, menuItemKey];
-      UIMenuItem *item = [[UIMenuItem alloc] initWithTitle: menuItemLabel
-                                                    action: NSSelectorFromString(sel)];
-      [menuControllerItems addObject: item];
-    }
+      UIMenuController *menuController = [UIMenuController sharedMenuController];
+      NSMutableArray *menuControllerItems = [NSMutableArray arrayWithCapacity:self.menuItems.count];
 
-    menuController.menuItems = menuControllerItems;
-    [menuController setMenuVisible:YES animated:YES];
+      for(NSDictionary *menuItem in self.menuItems) {
+        NSString *menuItemLabel = [RCTConvert NSString:menuItem[@"label"]];
+        NSString *menuItemKey = [RCTConvert NSString:menuItem[@"key"]];
+        NSString *sel = [NSString stringWithFormat:@"%@%@", CUSTOM_SELECTOR, menuItemKey];
+        UIMenuItem *item = [[UIMenuItem alloc] initWithTitle: menuItemLabel
+                                                      action: NSSelectorFromString(sel)];
+        [menuControllerItems addObject: item];
+      }
+      menuController.menuItems = menuControllerItems;
+      [menuController showMenuFromView:self rect:self.bounds];
+    }
 }
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
