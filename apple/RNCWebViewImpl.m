@@ -248,15 +248,16 @@ RCTAutoInsetsProtocol>
         return;
     }
     if (@available(iOS 16.0, *)) {
+      if (self.menuItems.count == 0) {
+        return;
+      }
       CGPoint location = [pressSender locationInView:self];
       UIEditMenuConfiguration *config = [UIEditMenuConfiguration configurationWithIdentifier:nil sourcePoint:location];
       [_editMenuInteraction presentEditMenuWithConfiguration:config];
     } else {
       // When a long press ends, bring up our custom UIMenu if defined
       if (self.menuItems.count == 0) {
-        UIMenuController *menuController = [UIMenuController sharedMenuController];
-        menuController.menuItems = nil;
-        [menuController showMenuFromView:self rect:self.bounds];
+        // Empty array should suppress the menu entirely (matching master branch behavior)
         return;
       }
 
@@ -282,6 +283,10 @@ RCTAutoInsetsProtocol>
     suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions 
     API_AVAILABLE(ios(16.0))
 {
+    if (self.menuItems.count == 0) {
+        return nil;
+    }
+    
     NSMutableArray<UICommand *> *menuItems = [NSMutableArray new];
     for(NSDictionary *menuItem in self.menuItems) {
         NSString *menuItemLabel = [RCTConvert NSString:menuItem[@"label"]];
