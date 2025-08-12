@@ -270,6 +270,32 @@ RCTAutoInsetsProtocol>
     [menuController setMenuVisible:YES animated:YES];
 }
 
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
+- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction 
+    menuForConfiguration:(UIEditMenuConfiguration *)configuration 
+    suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions 
+    API_AVAILABLE(ios(16.0))
+{
+    if (!self.menuItems || self.menuItems.count == 0) {
+        return nil;
+    }
+    
+    NSMutableArray<UICommand *> *menuCommands = [NSMutableArray new];
+    for(NSDictionary *menuItem in self.menuItems) {
+        NSString *menuItemLabel = [RCTConvert NSString:menuItem[@"label"]];
+        NSString *menuItemKey = [RCTConvert NSString:menuItem[@"key"]];
+        NSString *sel = [NSString stringWithFormat:@"%@%@", CUSTOM_SELECTOR, menuItemKey];
+        UICommand *command = [UICommand commandWithTitle:menuItemLabel
+                                                   image:nil
+                                                  action:NSSelectorFromString(sel)
+                                            propertyList:nil];
+        [menuCommands addObject:command];
+    }
+    UIMenu *menu = [UIMenu menuWithChildren:menuCommands];
+    return menu;
+}
+#endif
+
 #endif // !TARGET_OS_OSX
 
 - (void)dealloc
@@ -547,6 +573,16 @@ RCTAutoInsetsProtocol>
     longPress.cancelsTouchesInView = YES;
     [self addGestureRecognizer:longPress];
   }
+
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
+  if (@available(iOS 16.0, *)) {
+    if (self.menuItems != nil) {
+      _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
+      [self addInteraction:_editMenuInteraction];
+    }
+  }
+#endif
+
 #endif // !TARGET_OS_OSX
 }
 
@@ -588,6 +624,16 @@ RCTAutoInsetsProtocol>
       UIMenuController *menuController = [UIMenuController sharedMenuController];
       menuController.menuItems = nil;
     }
+
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
+    if (@available(iOS 16.0, *)) {
+        if (_editMenuInteraction) {
+            [self removeInteraction:_editMenuInteraction];
+            _editMenuInteraction = nil;
+        }
+    }
+#endif
+
 #endif // !TARGET_OS_OSX
     _webView = nil;
     if (_onContentProcessDidTerminate) {
@@ -846,6 +892,23 @@ RCTAutoInsetsProtocol>
 -(void)setMenuItems:(NSArray<NSDictionary *> *)menuItems {
     _menuItems = menuItems;
     _webView.menuItems = menuItems;
+    
+    // Add UIEditMenuInteraction support for iOS 16+
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 160000 /* iOS 16 */
+    if (@available(iOS 16.0, *)) {
+        // Remove existing interaction if any
+        if (_editMenuInteraction) {
+            [self removeInteraction:_editMenuInteraction];
+            _editMenuInteraction = nil;
+        }
+        
+        // Add new interaction if menuItems exist
+        if (menuItems && menuItems.count > 0) {
+            _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
+            [self addInteraction:_editMenuInteraction];
+        }
+    }
+#endif
 }
 
 -(void)setSuppressMenuItems:(NSArray<NSString *> *)suppressMenuItems {
