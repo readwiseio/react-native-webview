@@ -276,11 +276,7 @@ RCTAutoInsetsProtocol>
     suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions 
     API_AVAILABLE(ios(16.0))
 {
-    if (!self.menuItems || self.menuItems.count == 0) {
-        return nil;
-    }
-    
-    NSMutableArray<UICommand *> *menuCommands = [NSMutableArray new];
+    NSMutableArray<UICommand *> *menuItems = [NSMutableArray new];
     for(NSDictionary *menuItem in self.menuItems) {
         NSString *menuItemLabel = [RCTConvert NSString:menuItem[@"label"]];
         NSString *menuItemKey = [RCTConvert NSString:menuItem[@"key"]];
@@ -289,9 +285,9 @@ RCTAutoInsetsProtocol>
                                                    image:nil
                                                   action:NSSelectorFromString(sel)
                                             propertyList:nil];
-        [menuCommands addObject:command];
+        [menuItems addObject:command];
     }
-    UIMenu *menu = [UIMenu menuWithChildren:menuCommands];
+    UIMenu *menu = [UIMenu menuWithChildren:menuItems];
     return menu;
 }
 #endif
