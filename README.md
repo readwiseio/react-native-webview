@@ -1,4 +1,4 @@
-# Readwise fork
+# Readwise fork
 
 `master` is the branch we use (regretfully).
 
