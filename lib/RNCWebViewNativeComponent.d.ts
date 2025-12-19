@@ -209,6 +209,8 @@ export interface NativeProps extends ViewProps {
     onShouldStartLoadWithRequest: DirectEventHandler<ShouldStartLoadRequestEvent>;
     showsHorizontalScrollIndicator?: boolean;
     showsVerticalScrollIndicator?: boolean;
+    forceLightScrollIndicators?: boolean;
+    scrollsToTop?: boolean;
     newSource: Readonly<{
         uri?: string;
         method?: string;
@@ -235,7 +237,7 @@ export interface NativeCommands {
     clearFormData: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
     clearCache: (viewRef: React.ElementRef<HostComponent<NativeProps>>, includeDiskFiles: boolean) => void;
     clearHistory: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
-    setTintColor: (viewRef: React.ElementRef<HostComponent<NativeProps>>, red: number, blue: number, green: number, alpha: number) => void;
+    setTintColor: (viewRef: React.ElementRef<HostComponent<NativeProps>>, red: Double, blue: Double, green: Double, alpha: Double) => void;
 }
 export declare const Commands: NativeCommands;
 declare const _default: HostComponent<NativeProps>;
