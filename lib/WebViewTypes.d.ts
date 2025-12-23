@@ -201,6 +201,7 @@ export interface CommonNativeWebViewProps extends ViewProps {
     onShouldStartLoadWithRequest: (event: ShouldStartLoadRequestEvent) => void;
     showsHorizontalScrollIndicator?: boolean;
     showsVerticalScrollIndicator?: boolean;
+    forceLightScrollIndicators?: boolean;
     source: any;
     userAgent?: string;
     /**
@@ -294,8 +295,15 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      */
     scrollEnabled?: boolean;
     /**
+     * Boolean value that determines whether scrolling to the top is enabled
+     * when the user taps the status bar. The default value is `true`.
+     *
+     * @platform ios
+     */
+    scrollsToTop?: boolean;
+    /**
      * If the value of this property is true, the scroll view stops on multiples
-     * of the scroll view’s bounds when the user scrolls.
+     * of the scroll view's bounds when the user scrolls.
      * The default value is false.
      * @platform ios
      */
@@ -1023,6 +1031,12 @@ export interface WebViewSharedProps extends ViewProps {
      * shown in the `WebView`. The default value is `true`.
      */
     showsVerticalScrollIndicator?: boolean;
+    /**
+     * Boolean value that determines whether a light scrollbar is
+     * shown in the `WebView`. The default value is `false`.
+     * @platform ios
+     */
+    forceLightScrollIndicators?: boolean;
     /**
      * Boolean that determines whether HTML5 audio and video requires the user
      * to tap them before they start playing. The default value is `true`.

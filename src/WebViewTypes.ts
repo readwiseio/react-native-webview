@@ -239,7 +239,7 @@ export interface WebViewCustomMenuItems {
   label: string;
 }
 
-export declare type SuppressMenuItem = 
+export declare type SuppressMenuItem =
   | "cut"
   | "copy"
   | "paste"
@@ -377,10 +377,10 @@ export interface WindowsWebViewProps extends WebViewSharedProps {
   useWebView2?: boolean;
   /**
    * Function that is invoked when the `WebView` should open a new window.
-   * 
+   *
    * This happens when the JS calls `window.open('http://someurl', '_blank')`
    * or when the user clicks on a `<a href="http://someurl" target="_blank">` link.
-   * 
+   *
    * Only works with `useWebView2` set to `true`.
    *
    * @platform windows
@@ -390,9 +390,9 @@ export interface WindowsWebViewProps extends WebViewSharedProps {
   /**
    * Function that is invoked when the `WebView` responds to a request to load a new resource.
    * Works only on Windows.
-   * 
+   *
    * Only works with `useWebView2` set to `true`.
-   * 
+   *
    * @platform windows
    */
   onSourceChanged?: (event: WebViewNavigationEvent) => void;
@@ -432,8 +432,16 @@ export interface IOSWebViewProps extends WebViewSharedProps {
   scrollEnabled?: boolean;
 
   /**
+   * Boolean value that determines whether scrolling to the top is enabled
+   * when the user taps the status bar. The default value is `true`.
+   *
+   * @platform ios
+   */
+  scrollsToTop?: boolean;
+
+  /**
    * If the value of this property is true, the scroll view stops on multiples
-   * of the scroll view’s bounds when the user scrolls.
+   * of the scroll view's bounds when the user scrolls.
    * The default value is false.
    * @platform ios
    */
@@ -630,7 +638,7 @@ export interface IOSWebViewProps extends WebViewSharedProps {
 
   /**
    * Function that is invoked when the `WebView` should open a new window.
-   * 
+   *
    * This happens when the JS calls `window.open('http://someurl', '_blank')`
    * or when the user clicks on a `<a href="http://someurl" target="_blank">` link.
    *
@@ -926,7 +934,7 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
 
   /**
    * Function that is invoked when the `WebView` should open a new window.
-   * 
+   *
    * This happens when the JS calls `window.open('http://someurl', '_blank')`
    * or when the user clicks on a `<a href="http://someurl" target="_blank">` link.
    *
@@ -1316,7 +1324,7 @@ export interface WebViewSharedProps extends ViewProps {
    * Inject a JavaScript object to be accessed as a JSON string via JavaScript in the WebView.
    */
   injectedJavaScriptObject?: object;
-  
+
   /**
    * Enables WebView remote debugging using Chrome (Android) or Safari (iOS).
    */

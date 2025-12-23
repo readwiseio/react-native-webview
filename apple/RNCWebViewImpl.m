@@ -166,6 +166,7 @@ RCTAutoInsetsProtocol>
     _showsHorizontalScrollIndicator = YES;
     _showsVerticalScrollIndicator = YES;
     _forceLightScrollIndicators = NO;
+    _scrollsToTop = YES;
     _directionalLockEnabled = YES;
     _automaticallyAdjustContentInsets = YES;
     _autoManageStatusBarEnabled = YES;
@@ -504,6 +505,7 @@ RCTAutoInsetsProtocol>
     else{
         _webView.scrollView.indicatorStyle = UIScrollViewIndicatorStyleDefault;
     }
+    _webView.scrollView.scrollsToTop = _scrollsToTop;
     _webView.scrollView.directionalLockEnabled = _directionalLockEnabled;
 #endif // !TARGET_OS_OSX
     _webView.allowsLinkPreview = _allowsLinkPreview;
@@ -1042,6 +1044,12 @@ RCTAutoInsetsProtocol>
   else{
       _webView.scrollView.indicatorStyle = UIScrollViewIndicatorStyleDefault;
   }
+}
+
+- (void)setScrollsToTop:(BOOL)scrollsToTop
+{
+  _scrollsToTop = scrollsToTop;
+  _webView.scrollView.scrollsToTop = scrollsToTop;
 }
 #endif // !TARGET_OS_OSX
 

@@ -175,6 +175,10 @@ RCT_CUSTOM_VIEW_PROPERTY(forceLightScrollIndicators, BOOL, RNCWebViewImpl) {
   view.forceLightScrollIndicators = json == nil ? true : [RCTConvert BOOL: json];
 }
 
+RCT_CUSTOM_VIEW_PROPERTY(scrollsToTop, BOOL, RNCWebViewImpl) {
+  view.scrollsToTop = json == nil ? true : [RCTConvert BOOL: json];
+}
+
 RCT_CUSTOM_VIEW_PROPERTY(keyboardDisplayRequiresUserAction, BOOL, RNCWebViewImpl) {
   view.keyboardDisplayRequiresUserAction = json == nil ? true : [RCTConvert BOOL: json];
 }
