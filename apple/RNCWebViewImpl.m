@@ -1055,6 +1055,7 @@ RCTAutoInsetsProtocol>
   _scrollsToTop = scrollsToTop;
   _webView.scrollView.scrollsToTop = scrollsToTop;
 }
+#endif // !TARGET_OS_OSX
 
 #if !TARGET_OS_OSX
 - (void)setDragInteractionEnabled:(BOOL)dragInteractionEnabled
