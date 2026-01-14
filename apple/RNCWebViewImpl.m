@@ -166,6 +166,7 @@ RCTAutoInsetsProtocol>
     _showsHorizontalScrollIndicator = YES;
     _showsVerticalScrollIndicator = YES;
     _forceLightScrollIndicators = NO;
+    _dragInteractionEnabled = YES;
     _scrollsToTop = YES;
     _directionalLockEnabled = YES;
     _automaticallyAdjustContentInsets = YES;
@@ -537,6 +538,9 @@ RCTAutoInsetsProtocol>
     [self setHideKeyboardAccessoryView: _savedHideKeyboardAccessoryView];
     [self setKeyboardDisplayRequiresUserAction: _savedKeyboardDisplayRequiresUserAction];
     [self visitSource];
+#if !TARGET_OS_OSX
+    [self updateDragInteractionState];
+#endif
   }
 #if !TARGET_OS_OSX
   // Allow this object to recognize gestures
@@ -1050,6 +1054,36 @@ RCTAutoInsetsProtocol>
 {
   _scrollsToTop = scrollsToTop;
   _webView.scrollView.scrollsToTop = scrollsToTop;
+}
+
+#if !TARGET_OS_OSX
+- (void)setDragInteractionEnabled:(BOOL)dragInteractionEnabled
+{
+  _dragInteractionEnabled = dragInteractionEnabled;
+  [self updateDragInteractionState];
+}
+
+- (void)updateDragInteractionState
+{
+  if (@available(iOS 11.0, *)) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      [self disableDragInteractionsRecursively:_webView];
+    });
+  }
+}
+
+- (void)disableDragInteractionsRecursively:(UIView *)view
+{
+  if (@available(iOS 11.0, *)) {
+    for (id<UIInteraction> interaction in view.interactions) {
+      if ([interaction isKindOfClass:[UIDragInteraction class]]) {
+        ((UIDragInteraction *)interaction).enabled = _dragInteractionEnabled;
+      }
+    }
+    for (UIView *subview in view.subviews) {
+      [self disableDragInteractionsRecursively:subview];
+    }
+  }
 }
 #endif // !TARGET_OS_OSX
 

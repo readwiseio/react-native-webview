@@ -670,6 +670,14 @@ export interface IOSWebViewProps extends WebViewSharedProps {
   pullToRefreshEnabled?: boolean;
 
   /**
+   * Controls whether text can be dragged from the webview.
+   * Set to false to disable iOS drag-and-drop.
+   * @platform ios
+   * @default true
+   */
+  dragInteractionEnabled?: boolean;
+
+  /**
    * Function that is invoked when the client needs to download a file.
    *
    * iOS 13+ only: If the webview navigates to a URL that results in an HTTP
