@@ -198,6 +198,7 @@ export interface NativeProps extends ViewProps {
   mediaCapturePermissionGrantType?: WithDefault<'prompt' | 'grant' | 'deny' | 'grantIfSameHostElsePrompt' | 'grantIfSameHostElseDeny', 'prompt'>;
   pagingEnabled?: boolean;
   pullToRefreshEnabled?: boolean;
+  dragInteractionEnabled?: boolean;
   scrollEnabled?: boolean;
   sharedCookiesEnabled?: boolean;
   textInteractionEnabled?: boolean;
