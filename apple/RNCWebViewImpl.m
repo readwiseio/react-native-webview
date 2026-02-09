@@ -6,6 +6,7 @@
  */
 
 #import "RNCWebViewImpl.h"
+#import "RNCAssetSchemeHandler.h"
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
@@ -181,6 +182,8 @@ RCTAutoInsetsProtocol>
     _injectedJavaScriptBeforeContentLoaded = nil;
     _injectedJavaScriptBeforeContentLoadedForMainFrameOnly = YES;
     _enableApplePay = NO;
+    _scrollsToTop = YES;
+    _dragInteractionEnabled = YES;
 #if TARGET_OS_IOS
     _savedStatusBarStyle = RCTSharedApplication().statusBarStyle;
     _savedStatusBarHidden = RCTSharedApplication().statusBarHidden;
@@ -509,6 +512,11 @@ RCTAutoInsetsProtocol>
     wkWebViewConfig.applicationNameForUserAgent = [NSString stringWithFormat:@"%@ %@", wkWebViewConfig.applicationNameForUserAgent, _applicationNameForUserAgent];
   }
 
+  // Register custom URL scheme handler to serve app bundle assets (fonts, etc.)
+  // from WKWebView pages loaded with about:blank origin, which can't access file:// URLs.
+  RNCAssetSchemeHandler *assetHandler = [[RNCAssetSchemeHandler alloc] init];
+  [wkWebViewConfig setURLSchemeHandler:assetHandler forURLScheme:@"rw-asset"];
+
   return wkWebViewConfig;
 }
 
@@ -545,6 +553,7 @@ RCTAutoInsetsProtocol>
     }
 
     _webView.scrollView.directionalLockEnabled = _directionalLockEnabled;
+    _webView.scrollView.scrollsToTop = _scrollsToTop;
 #endif // !TARGET_OS_OSX
     _webView.allowsLinkPreview = _allowsLinkPreview;
     [_webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionOld | NSKeyValueObservingOptionNew context:nil];
@@ -738,6 +747,11 @@ RCTAutoInsetsProtocol>
     [_webView setValue:@(!opaque) forKey: @"drawsTransparentBackground"];
   }
 #endif // !TARGET_OS_OSX
+}
+
+- (void)setTintColor:(UIColor *)tintColor
+{
+  _webView.tintColor = tintColor;
 }
 
 #if !TARGET_OS_OSX
@@ -1106,6 +1120,25 @@ RCTAutoInsetsProtocol>
     _webView.scrollView.indicatorStyle = UIScrollViewIndicatorStyleDefault;
   }
 }
+
+- (void)setScrollsToTop:(BOOL)scrollsToTop
+{
+  _scrollsToTop = scrollsToTop;
+  _webView.scrollView.scrollsToTop = scrollsToTop;
+}
+
+- (void)setDragInteractionEnabled:(BOOL)dragInteractionEnabled
+{
+  _dragInteractionEnabled = dragInteractionEnabled;
+  if (@available(iOS 11.0, *)) {
+    for (id interaction in _webView.scrollView.interactions) {
+      if ([interaction isKindOfClass:[UIDragInteraction class]]) {
+        ((UIDragInteraction *)interaction).enabled = dragInteractionEnabled;
+      }
+    }
+  }
+}
+
 #endif // !TARGET_OS_OSX
 
 - (void)postMessage:(NSString *)message
