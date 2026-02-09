@@ -6,6 +6,7 @@
  */
 
 #import "RNCWebViewImpl.h"
+#import "RNCAssetSchemeHandler.h"
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
@@ -510,6 +511,11 @@ RCTAutoInsetsProtocol>
   if (_applicationNameForUserAgent) {
     wkWebViewConfig.applicationNameForUserAgent = [NSString stringWithFormat:@"%@ %@", wkWebViewConfig.applicationNameForUserAgent, _applicationNameForUserAgent];
   }
+
+  // Register custom URL scheme handler to serve app bundle assets (fonts, etc.)
+  // from WKWebView pages loaded with about:blank origin, which can't access file:// URLs.
+  RNCAssetSchemeHandler *assetHandler = [[RNCAssetSchemeHandler alloc] init];
+  [wkWebViewConfig setURLSchemeHandler:assetHandler forURLScheme:@"rw-asset"];
 
   return wkWebViewConfig;
 }
