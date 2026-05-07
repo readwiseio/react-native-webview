@@ -162,6 +162,7 @@ export interface NativeProps extends ViewProps {
     hideKeyboardAccessoryView?: boolean;
     keyboardDisplayRequiresUserAction?: WithDefault<boolean, true>;
     limitsNavigationsToAppBoundDomains?: boolean;
+    preventUniversalLinks?: ReadonlyArray<string>;
     mediaCapturePermissionGrantType?: WithDefault<'prompt' | 'grant' | 'deny' | 'grantIfSameHostElsePrompt' | 'grantIfSameHostElseDeny', 'prompt'>;
     pagingEnabled?: boolean;
     pullToRefreshEnabled?: boolean;
