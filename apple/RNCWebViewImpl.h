@@ -129,6 +129,8 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, assign) BOOL limitsNavigationsToAppBoundDomains;
 #endif
 
+@property (nonatomic, copy) NSArray<NSString *> * _Nullable preventUniversalLinks;
+
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140500 /* iOS 14.5 */
 @property (nonatomic, assign) BOOL textInteractionEnabled;
 #endif
