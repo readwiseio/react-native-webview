@@ -557,6 +557,29 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      */
     limitsNavigationsToAppBoundDomains?: boolean;
     /**
+     * List of hosts to sandbox from iOS Universal Link handoff. For any
+     * top-frame navigation whose host matches an entry, the navigation is
+     * canceled and re-issued via `[webView loadRequest:]` — the one nav
+     * type iOS does not consider for Universal Link handoff.
+     *
+     * Use this for WebViews that embed flows on hosts which register
+     * Universal Links for the host app (e.g. an in-app Goodreads sign-in
+     * where the post-auth redirect would otherwise hand off to the
+     * installed Goodreads app).
+     *
+     * Matching is domain-suffix with a dot boundary. Pass `goodreads.com`
+     * and it matches `goodreads.com`, `www.goodreads.com`, and any other
+     * subdomain — but NOT `evilgoodreads.com`.
+     *
+     * iOS does not expose a way to predict UL handoff at the navigation
+     * delegate, so the host list has to be declared by the app. Hosts not
+     * in the list are unaffected — POST bodies and single-use redirects
+     * pass through normally.
+     *
+     * @platform ios
+     */
+    preventUniversalLinks?: string[];
+    /**
      * If false indicates to WebKit that a WKWebView will not interact with text, thus
      * not showing a text selection loop. Only applicable for iOS 14.5 or greater.
      *

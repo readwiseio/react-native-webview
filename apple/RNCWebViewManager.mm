@@ -95,6 +95,8 @@ RCT_EXPORT_VIEW_PROPERTY(contentMode, WKContentMode)
 RCT_EXPORT_VIEW_PROPERTY(limitsNavigationsToAppBoundDomains, BOOL)
 #endif
 
+RCT_EXPORT_VIEW_PROPERTY(preventUniversalLinks, NSArray)
+
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140500 /* iOS 14.5 */
 RCT_EXPORT_VIEW_PROPERTY(textInteractionEnabled, BOOL)
 #endif

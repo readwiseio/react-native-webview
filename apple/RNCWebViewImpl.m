@@ -1381,6 +1381,51 @@ RCTAutoInsetsProtocol>
     BOOL isTopFrame = [request.URL isEqual:request.mainDocumentURL];
     BOOL hasTargetFrame = navigationAction.targetFrame != nil;
 
+    // Universal Link handoff bypass.
+    // When the request host matches an entry in `preventUniversalLinks`
+    // (domain-suffix match with dot boundary), the navigation is canceled
+    // and re-issued via `[webView loadRequest:]` — the one nav type iOS
+    // does not consider for Universal Link handoff. Without this, a
+    // navigation to a UL-eligible URL (e.g. an OAuth redirect targeting a
+    // host whose AASA registers Universal Links for this app) would hand
+    // the user off to the installed third-party app and break the
+    // embedded flow.
+    //
+    // Scoped to specified hosts on purpose: reissuing every top-frame nav
+    // would lose POST bodies and consume single-use auth codes when the
+    // chain runs through other hosts (e.g. an identity provider during
+    // OAuth).
+    //
+    // An associated-object flag breaks the cancel/reissue loop: the
+    // reissued nav re-enters this method with the flag set, we clear it
+    // and fall through to the normal handler.
+    if (_preventUniversalLinks.count > 0 && isTopFrame && hasTargetFrame) {
+      static const void *kRNCUlBypassKey = &kRNCUlBypassKey;
+      NSString *host = request.URL.host.lowercaseString ?: @"";
+      BOOL hostMatches = NO;
+      for (NSString *pattern in _preventUniversalLinks) {
+        NSString *lowered = pattern.lowercaseString ?: @"";
+        if ([host isEqualToString:lowered] ||
+            [host hasSuffix:[@"." stringByAppendingString:lowered]]) {
+          hostMatches = YES;
+          break;
+        }
+      }
+      if (hostMatches) {
+        NSNumber *bypassFlag = objc_getAssociatedObject(webView, kRNCUlBypassKey);
+        if ([bypassFlag boolValue]) {
+          objc_setAssociatedObject(webView, kRNCUlBypassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+          objc_setAssociatedObject(webView, kRNCUlBypassKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+          decisionHandler(WKNavigationActionPolicyCancel);
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [webView loadRequest:request];
+          });
+          return;
+        }
+      }
+    }
+
     if (_onOpenWindow && !hasTargetFrame) {
       // When OnOpenWindow should be called, we want to prevent the navigation
       // If not prevented, the `decisionHandler` is called first and after that `createWebViewWithConfiguration` is called

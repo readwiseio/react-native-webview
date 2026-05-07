@@ -321,6 +321,13 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000 /* iOS 14 */
     REMAP_WEBVIEW_PROP(limitsNavigationsToAppBoundDomains)
 #endif
+    if(oldViewProps.preventUniversalLinks != newViewProps.preventUniversalLinks) {
+        NSMutableArray *preventUniversalLinks = [NSMutableArray array];
+        for (const auto &host: newViewProps.preventUniversalLinks) {
+            [preventUniversalLinks addObject: RCTNSStringFromString(host)];
+        }
+        [_view setPreventUniversalLinks:preventUniversalLinks];
+    }
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140500 /* iOS 14.5 */
     REMAP_WEBVIEW_PROP(textInteractionEnabled)
 #endif
