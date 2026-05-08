@@ -437,6 +437,9 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
 
     @Override
     public void setDragInteractionEnabled(RNCWebViewWrapper view, boolean value) {}
+
+    @Override
+    public void setPreventUniversalLinks(RNCWebViewWrapper view, @Nullable ReadableArray value) {}
     /* !iOS PROPS - no implemented here */
 
     @Override
