@@ -136,6 +136,27 @@ export interface WebViewOpenWindow {
   targetUrl: string;
 }
 
+export interface WebViewNativeTouchEnd {
+  /**
+   * Which terminal MotionEvent action ended the gesture:
+   * - `'up'` — the final finger lifted off (`ACTION_UP`).
+   * - `'cancel'` — the gesture was seized by the system, e.g. the native
+   *   text-selection controller took over (`ACTION_CANCEL`).
+   * - `'pointerUp'` — a non-final pointer lifted in a multi-touch gesture
+   *   (`ACTION_POINTER_UP`).
+   */
+  action: 'up' | 'cancel' | 'pointerUp';
+  /**
+   * Number of pointers present at the event.
+   */
+  pointerCount: number;
+  /**
+   * Event coordinates in pixels.
+   */
+  x: number;
+  y: number;
+}
+
 export type WebViewEvent = NativeSyntheticEvent<WebViewNativeEvent>;
 
 export type WebViewProgressEvent =
@@ -160,6 +181,9 @@ export type WebViewRenderProcessGoneEvent =
   NativeSyntheticEvent<WebViewRenderProcessGoneDetail>;
 
 export type WebViewOpenWindowEvent = NativeSyntheticEvent<WebViewOpenWindow>;
+
+export type WebViewNativeTouchEndEvent =
+  NativeSyntheticEvent<WebViewNativeTouchEnd>;
 
 export type WebViewScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
 
@@ -308,6 +332,7 @@ export interface CommonNativeWebViewProps extends ViewProps {
   onHttpError: (event: WebViewHttpErrorEvent) => void;
   onMessage: (event: WebViewMessageEvent) => void;
   onShouldStartLoadWithRequest: (event: ShouldStartLoadRequestEvent) => void;
+  onNativeTouchEnd?: (event: WebViewNativeTouchEndEvent) => void;
   showsHorizontalScrollIndicator?: boolean;
   showsVerticalScrollIndicator?: boolean;
   paymentRequestEnabled?: boolean;
@@ -1004,6 +1029,20 @@ export interface AndroidWebViewProps extends WebViewSharedProps {
    * @platform android
    */
   onOpenWindow?: (event: WebViewOpenWindowEvent) => void;
+
+  /**
+   * Function that is invoked when the WebView's own native MotionEvent stream
+   * reports a gesture end (`ACTION_UP`, `ACTION_POINTER_UP`, or `ACTION_CANCEL`).
+   *
+   * Unlike RN's `onTouchEnd` responder, this observes the WebView's own touch
+   * stream, so it can fire even when Chromium's native text-selection controller
+   * seizes the gesture (the case where RN-side release signals get cancelled).
+   * Inspect `event.nativeEvent.action` to distinguish a genuine lift (`'up'`) from
+   * a cancel (`'cancel'`).
+   *
+   * @platform android
+   */
+  onNativeTouchEnd?: (event: WebViewNativeTouchEndEvent) => void;
 
   /**
    * https://developer.android.com/reference/android/webkit/WebSettings.html#setCacheMode(int)

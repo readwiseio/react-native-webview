@@ -25,6 +25,12 @@ export type WebViewMessageEvent = Readonly<{
 export type WebViewOpenWindowEvent = Readonly<{
     targetUrl: string;
 }>;
+export type WebViewNativeTouchEndEvent = Readonly<{
+    action: 'up' | 'cancel' | 'pointerUp';
+    pointerCount: Int32;
+    x: Double;
+    y: Double;
+}>;
 export type WebViewHttpErrorEvent = Readonly<{
     url: string;
     loading: boolean;
@@ -129,6 +135,7 @@ export interface NativeProps extends ViewProps {
     nestedScrollEnabled?: boolean;
     onContentSizeChange?: DirectEventHandler<WebViewNativeEvent>;
     onRenderProcessGone?: DirectEventHandler<WebViewRenderProcessGoneEvent>;
+    onNativeTouchEnd?: DirectEventHandler<WebViewNativeTouchEndEvent>;
     overScrollMode?: string;
     saveFormDataDisabled?: boolean;
     scalesPageToFit?: WithDefault<boolean, true>;
