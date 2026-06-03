@@ -33,6 +33,12 @@ export type WebViewMessageEvent = Readonly<{
 export type WebViewOpenWindowEvent = Readonly<{
   targetUrl: string;
 }>;
+export type WebViewNativeTouchEndEvent = Readonly<{
+  action: 'up' | 'cancel' | 'pointerUp';
+  pointerCount: Int32;
+  x: Double;
+  y: Double;
+}>;
 export type WebViewHttpErrorEvent = Readonly<{
   url: string;
   loading: boolean;
@@ -166,6 +172,9 @@ export interface NativeProps extends ViewProps {
   nestedScrollEnabled?: boolean;
   onContentSizeChange?: DirectEventHandler<WebViewNativeEvent>;
   onRenderProcessGone?: DirectEventHandler<WebViewRenderProcessGoneEvent>;
+  // Fires from the WebView's own MotionEvent stream on gesture end (UP/POINTER_UP/CANCEL).
+  // Android-only behavior; iOS keeps a no-op so the shared codegen interface stays consistent.
+  onNativeTouchEnd?: DirectEventHandler<WebViewNativeTouchEndEvent>;
   overScrollMode?: string;
   saveFormDataDisabled?: boolean;
   scalesPageToFit?: WithDefault<boolean, true>;

@@ -11,6 +11,7 @@ import com.facebook.react.uimanager.ViewGroupManager;
 import com.facebook.react.uimanager.annotations.ReactProp;
 import com.facebook.react.views.scroll.ScrollEventType;
 import com.reactnativecommunity.webview.events.TopCustomMenuSelectionEvent;
+import com.reactnativecommunity.webview.events.TopNativeTouchEndEvent;
 import com.reactnativecommunity.webview.events.SubResourceErrorEvent;
 import com.reactnativecommunity.webview.events.TopHttpErrorEvent;
 import com.reactnativecommunity.webview.events.TopLoadingErrorEvent;
@@ -305,6 +306,7 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper> {
         export.put(TopHttpErrorEvent.EVENT_NAME, MapBuilder.of("registrationName", "onHttpError"));
         export.put(TopRenderProcessGoneEvent.EVENT_NAME, MapBuilder.of("registrationName", "onRenderProcessGone"));
         export.put(TopCustomMenuSelectionEvent.EVENT_NAME, MapBuilder.of("registrationName", "onCustomMenuSelection"));
+        export.put(TopNativeTouchEndEvent.EVENT_NAME, MapBuilder.of("registrationName", "onNativeTouchEnd"));
         export.put(TopOpenWindowEvent.EVENT_NAME, MapBuilder.of("registrationName", "onOpenWindow"));
         return export;
     }

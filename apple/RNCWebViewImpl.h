@@ -115,6 +115,9 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, copy) NSArray<NSDictionary *> * _Nullable menuItems;
 @property (nonatomic, copy) NSArray<NSString *> * _Nullable suppressMenuItems;
 @property (nonatomic, copy) RCTDirectEventBlock onCustomMenuSelection;
+// Android-only event; declared here as a no-op so the shared codegen interface
+// stays consistent across platforms. Never fired on iOS/macOS.
+@property (nonatomic, copy) RCTDirectEventBlock onNativeTouchEnd;
 #if !TARGET_OS_OSX
 @property (nonatomic, assign) WKDataDetectorTypes dataDetectorTypes;
 @property (nonatomic, weak) UIRefreshControl * _Nullable refreshControl;

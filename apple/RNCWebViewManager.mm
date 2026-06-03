@@ -124,6 +124,8 @@ RCT_CUSTOM_VIEW_PROPERTY(hasOnFileDownload, BOOL, RNCWebViewImpl) {}
 RCT_CUSTOM_VIEW_PROPERTY(hasOnOpenWindowEvent, BOOL, RNCWebViewImpl) {}
 
 RCT_EXPORT_VIEW_PROPERTY(onCustomMenuSelection, RCTDirectEventBlock)
+// Android-only event; exported here as a no-op for codegen-interface parity. Never fired on iOS.
+RCT_EXPORT_VIEW_PROPERTY(onNativeTouchEnd, RCTDirectEventBlock)
 RCT_CUSTOM_VIEW_PROPERTY(pullToRefreshEnabled, BOOL, RNCWebViewImpl) {
   view.pullToRefreshEnabled = json == nil ? false : [RCTConvert BOOL: json];
 }

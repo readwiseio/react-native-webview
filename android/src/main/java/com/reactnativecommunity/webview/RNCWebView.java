@@ -40,6 +40,7 @@ import com.facebook.react.views.scroll.ScrollEvent;
 import com.facebook.react.views.scroll.ScrollEventType;
 import com.reactnativecommunity.webview.events.TopCustomMenuSelectionEvent;
 import com.reactnativecommunity.webview.events.TopMessageEvent;
+import com.reactnativecommunity.webview.events.TopNativeTouchEndEvent;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -128,6 +129,39 @@ public class RNCWebView extends WebView implements LifecycleEventListener {
             requestDisallowInterceptTouchEvent(true);
         }
         return super.onTouchEvent(event);
+    }
+
+    /**
+     * Observe-only hook into the WebView's own MotionEvent stream. On a terminal action
+     * (UP / POINTER_UP / CANCEL) we emit {@code onNativeTouchEnd} so JS can detect a finger
+     * lift even when Chromium's native text-selection controller has seized the gesture and
+     * suppressed the usual RN/DOM release signals. Always returns super — no behavior change.
+     */
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        String action = null;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_UP:
+                action = "up";
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                action = "cancel";
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+                action = "pointerUp";
+                break;
+            default:
+                break;
+        }
+        if (action != null) {
+            WritableMap data = Arguments.createMap();
+            data.putString("action", action);
+            data.putInt("pointerCount", event.getPointerCount());
+            data.putDouble("x", event.getX());
+            data.putDouble("y", event.getY());
+            dispatchEvent(this, new TopNativeTouchEndEvent(RNCWebViewWrapper.getReactTagFromWebView(this), data));
+        }
+        return super.dispatchTouchEvent(event);
     }
 
     @Override
