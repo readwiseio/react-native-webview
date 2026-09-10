@@ -1,10 +1,42 @@
 #import "RNCWebViewPageCurl.h"
+#import "RNCPageCurlRenderer.h"
 #import <UIKit/UIGestureRecognizerSubclass.h>
-#import <objc/runtime.h>
 
 static NSString *const RNCPageCurlSlotCurrent = @"current";
 static NSString *const RNCPageCurlSlotPrevious = @"previous";
 static NSString *const RNCPageCurlSlotNext = @"next";
+
+// defaults for the tuning JSON; the Bookwise side documents each knob
+static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
+{
+  return @{
+    @"radiusFraction": @0.12,
+    @"radiusMax": @90,
+    @"bendInDistance": @30,
+    @"settleGain": @2,
+    @"tiltSoftness": @120,
+    @"grabMinFraction": @0.45,
+    @"castWidthFloor": @0.5,
+    @"castWidthPerRadius": @0.9,
+    @"castStrengthFloor": @0.6,
+    @"castSoftness": @0.35,
+    @"aheadNear": @0.8,
+    @"aheadFar": @2.4,
+    @"bendDarken": @0.55,
+    @"bendDarkenIn": @80,
+    @"crestPosition": @0.62,
+    @"crestWidth": @0.13,
+    @"riseScale": @0.35,
+    @"aheadStrength": @1.0,
+    @"tightFade": @0.7,
+    @"completeFraction": @0.5,
+    @"flickVelocity": @300,
+    @"durationBase": @0.18,
+    @"durationPerRemaining": @0.32,
+    @"speedMin": @0.45,
+    @"speedMax": @1.3,
+  };
+}
 
 typedef void (^RNCPageCurlStep)(void (^done)(BOOL ok));
 
@@ -60,8 +92,25 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   return nil;
 }
 
-// Never recognizes; only reports raw touch begin/end so the page controller's view can be
-// made visible before its pan recognizer evaluates the touch (the curl will not start on a hidden view).
+// the paper faded toward the opposite extreme so it reads as the reverse side in both themes
+static UIColor *RNCPageCurlFadedPaper(UIColor *paper)
+{
+  CGFloat r = 1, g = 1, b = 1, a = 1;
+  [paper getRed:&r green:&g blue:&b alpha:&a];
+  CGFloat luma = 0.299 * r + 0.587 * g + 0.114 * b;
+  CGFloat toward = luma < 0.5 ? 1.0 : 0.0;
+  CGFloat amount = 0.12;
+  return [UIColor colorWithRed:r + (toward - r) * amount green:g + (toward - g) * amount blue:b + (toward - b) * amount alpha:1];
+}
+
+static CGFloat RNCPageCurlEaseOut(CGFloat t)
+{
+  CGFloat inv = 1 - t;
+  return 1 - inv * inv * inv;
+}
+
+// Never recognizes; only reports raw touch begin/end so a tap can be told apart from a drag
+// and a still hold can hand the touch back to WebKit's selection recognizers.
 @interface RNCPageCurlTouchObserver : UIGestureRecognizer
 @property (nonatomic, copy) void (^onTouchesBegan)(void);
 @property (nonatomic, copy) void (^onTouchesEnded)(void);
@@ -132,54 +181,38 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
 
 @end
 
-@interface RNCPageCurlImageViewController : UIViewController
-@property (nonatomic, strong) UIImageView *imageView;
-@property (nonatomic, copy) NSString *slot;
-@property (nonatomic, assign) NSInteger half; // 0 = whole sheet or left half, 1 = right half
+@interface RNCPageCurlSlot : NSObject
+@property (nonatomic, strong, nullable) UIImage *image;
+@property (nonatomic, strong, nullable) id<MTLTexture> texture;
 // absent = there is no page in this direction at all (start/end of the book); an empty
-// non-absent slot curls onto a blank paper-colored page that the next bake fills in
+// non-absent slot curls onto blank paper that the next bake fills in
 @property (nonatomic, assign) BOOL absent;
-// the reverse side of a sheet: paper only, shown while the sheet is mid-curl
-@property (nonatomic, assign) BOOL back;
 @end
 
-@implementation RNCPageCurlImageViewController
-
-- (void)viewDidLoad
-{
-  [super viewDidLoad];
-  self.view.backgroundColor = [UIColor whiteColor];
-  _imageView = [[UIImageView alloc] initWithFrame:self.view.bounds];
-  _imageView.contentMode = UIViewContentModeScaleToFill;
-  _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-  [self.view addSubview:_imageView];
-}
-
+@implementation RNCPageCurlSlot
 @end
 
-@interface RNCWebViewPageCurl () <UIPageViewControllerDataSource, UIPageViewControllerDelegate>
+@interface RNCWebViewPageCurl () <UIGestureRecognizerDelegate>
 @end
 
 @implementation RNCWebViewPageCurl {
   __weak UIView *_hostView;
   __weak WKWebView *_webView;
-  UIPageViewController *_pageController;
-  // ordered previous(L,R) current(L,R) next(L,R); one controller per slot when not a spread
-  NSArray<RNCPageCurlImageViewController *> *_orderedControllers;
-  NSMutableDictionary<NSString *, NSArray<RNCPageCurlImageViewController *> *> *_slotControllers;
-  // single-sheet mode only: one back face per slot, interleaved after its front in the order
-  NSArray<RNCPageCurlImageViewController *> *_backControllers;
+  RNCPageCurlRenderer *_renderer;
+  NSMutableDictionary<NSString *, RNCPageCurlSlot *> *_slots;
   UIPanGestureRecognizer *_pan;
   RNCPageCurlTouchObserver *_touchObserver;
+  UIColor *_adoptedPaper;
+  NSDictionary<NSString *, NSNumber *> *_tuningValues;
   BOOL _enabled;
   BOOL _spread;
   BOOL _transitionInFlight;
   BOOL _edgeEmitted;
   // curls are allowed only between a finished bake cycle and the next page change
   BOOL _ready;
-  // a bake cycle is moving the webview under the controller
+  // a bake cycle is moving the webview under the renderer
   BOOL _cycleRunning;
-  // the controller must stay visible: a cycle is running, or a turn crossed the chunk edge
+  // the renderer must stay visible: a cycle is running, or a turn crossed the chunk edge
   // and the settle that follows will rebake
   BOOL _coverHeld;
   // the manager is moving the webview itself; nothing unlocks before its settle
@@ -192,7 +225,28 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   NSInteger _chunkIndex;
   BOOL _isLastChunk;
   CGSize _lastSize;
-  BOOL _dumpedCurlLayers;
+  // the turn in flight: the sheet curls from its right edge in local coordinates, S is where
+  // the drag started on that edge and F is where the folded-over corner sits now
+  NSString *_turnDirection;
+  CGRect _turnSheetRect;
+  // the grabbed point, the folded-over point that tracks the finger, and where it sits at rest
+  CGPoint _turnStart;
+  CGPoint _turnFinger;
+  CGPoint _turnRest;
+  // the touch-down in sheet-local coordinates; the finger is tracked relative to it, since the grab
+  // point may have been moved out from the spine
+  CGPoint _turnTouchDown;
+  CGFloat _turnRadiusMax;
+  // a single-sheet turn back starts folded over and flattens out
+  BOOL _turnReversed;
+  // this pan asked for a direction with no page; stop asking until it ends
+  BOOL _turnDeclined;
+  CADisplayLink *_animation;
+  CFTimeInterval _animationStart;
+  CFTimeInterval _animationDuration;
+  CGPoint _animationFrom;
+  CGPoint _animationTo;
+  BOOL _animationCompletes;
 }
 
 - (instancetype)initWithHostView:(UIView *)hostView webView:(WKWebView *)webView
@@ -200,120 +254,155 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   if ((self = [super init])) {
     _hostView = hostView;
     _webView = webView;
+    _slots = [NSMutableDictionary dictionary];
+    for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
+      _slots[slot] = [RNCPageCurlSlot new];
+    }
   }
   return self;
 }
 
-- (RNCPageCurlImageViewController *)makeImageViewController:(NSString *)slot half:(NSInteger)half
-{
-  RNCPageCurlImageViewController *vc = [RNCPageCurlImageViewController new];
-  vc.slot = slot;
-  vc.half = half;
-  [vc loadViewIfNeeded];
-  return vc;
-}
-
-- (void)buildControllersForSpread:(BOOL)spread
-{
-  _spread = spread;
-  NSMutableDictionary *bySlot = [NSMutableDictionary dictionary];
-  for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
-    NSMutableArray *vcs = [NSMutableArray array];
-    [vcs addObject:[self makeImageViewController:slot half:0]];
-    if (spread) {
-      [vcs addObject:[self makeImageViewController:slot half:1]];
-    }
-    bySlot[slot] = vcs;
-  }
-  _slotControllers = bySlot;
-  if (spread) {
-    _backControllers = nil;
-  } else {
-    NSMutableArray *backs = [NSMutableArray array];
-    for (NSUInteger i = 0; i < 3; i++) {
-      RNCPageCurlImageViewController *vc = [self makeImageViewController:RNCPageCurlSlotCurrent half:0];
-      vc.back = YES;
-      [backs addObject:vc];
-    }
-    _backControllers = backs;
-  }
-  [self relabelSlots];
-  [self applyPaperColor];
-  NSLog(@"[page-curl] built %lu page controllers (spread=%d)", (unsigned long)_orderedControllers.count, spread);
-}
+#pragma mark - colors
 
 - (void)setPaperColor:(NSString *)paperColor
 {
   _paperColor = [paperColor copy];
-  [self applyPaperColor];
+  [self applyColors];
 }
 
-- (void)applyPaperColor
+- (void)setBackColor:(NSString *)backColor
 {
-  UIColor *paper = _paperColor != nil ? RNCPageCurlColorFromCSS(_paperColor) : nil;
-  NSLog(@"[page-curl] paper color %@ -> %@", _paperColor, paper);
-  if (paper == nil) {
+  _backColor = [backColor copy];
+  [self applyColors];
+}
+
+- (void)setShadowColor:(NSString *)shadowColor
+{
+  _shadowColor = [shadowColor copy];
+  [self applyColors];
+}
+
+- (void)setShadowOpacity:(NSNumber *)shadowOpacity
+{
+  _shadowOpacity = shadowOpacity;
+  [self applyColors];
+}
+
+- (void)setHighlightColor:(NSString *)highlightColor
+{
+  _highlightColor = [highlightColor copy];
+  [self applyColors];
+}
+
+- (void)setHighlightOpacity:(NSNumber *)highlightOpacity
+{
+  _highlightOpacity = highlightOpacity;
+  [self applyColors];
+}
+
+- (void)setTuning:(NSString *)tuning
+{
+  _tuning = [tuning copy];
+  NSDictionary *parsed = nil;
+  if (tuning.length > 0) {
+    NSError *error = nil;
+    id object = [NSJSONSerialization JSONObjectWithData:[tuning dataUsingEncoding:NSUTF8StringEncoding] options:0 error:&error];
+    if ([object isKindOfClass:[NSDictionary class]]) {
+      parsed = object;
+    } else {
+      NSLog(@"[page-curl] tuning ignored: not a JSON object (%@)", error);
+    }
+  }
+  _tuningValues = parsed;
+  [self applyTuning];
+}
+
+- (double)tune:(NSString *)key
+{
+  NSNumber *value = _tuningValues[key];
+  if (![value isKindOfClass:[NSNumber class]]) {
+    value = RNCPageCurlTuningDefaults()[key];
+  }
+  return value.doubleValue;
+}
+
+- (void)applyTuning
+{
+  if (_renderer == nil) {
     return;
   }
-  [self paintPaper:paper];
-}
-
-// fronts get the paper as is; the back of a sheet is the same paper slightly faded toward the
-// opposite extreme so it reads as the reverse side in both light and dark themes
-- (void)paintPaper:(UIColor *)paper
-{
-  CGFloat r = 1, g = 1, b = 1, a = 1;
-  [paper getRed:&r green:&g blue:&b alpha:&a];
-  CGFloat luma = 0.299 * r + 0.587 * g + 0.114 * b;
-  CGFloat toward = luma < 0.5 ? 1.0 : 0.0;
-  CGFloat amount = 0.12;
-  UIColor *faded = [UIColor colorWithRed:r + (toward - r) * amount green:g + (toward - g) * amount blue:b + (toward - b) * amount alpha:1];
-  for (RNCPageCurlImageViewController *vc in _orderedControllers) {
-    vc.view.backgroundColor = vc.back ? faded : paper;
+  RNCPageCurlShading shading = {
+    (float)[self tune:@"castWidthFloor"], (float)[self tune:@"castWidthPerRadius"], (float)[self tune:@"castStrengthFloor"],
+    (float)[self tune:@"castSoftness"], (float)[self tune:@"aheadNear"], (float)[self tune:@"aheadFar"], (float)[self tune:@"bendDarken"],
+    (float)[self tune:@"crestPosition"], (float)[self tune:@"crestWidth"], (float)[self tune:@"riseScale"],
+    (float)[self tune:@"aheadStrength"], (float)[self tune:@"tightFade"],
+  };
+  _renderer.shading = shading;
+  NSMutableString *summary = [NSMutableString string];
+  for (NSString *key in [RNCPageCurlTuningDefaults().allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [summary appendFormat:@" %@=%g", key, [self tune:key]];
   }
-}
-
-- (void)relabelSlots
-{
-  NSMutableArray *ordered = [NSMutableArray array];
-  NSUInteger slotIndex = 0;
-  for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
-    for (RNCPageCurlImageViewController *vc in _slotControllers[slot]) {
-      vc.slot = slot;
-      [ordered addObject:vc];
+  for (NSString *key in _tuningValues) {
+    if (RNCPageCurlTuningDefaults()[key] == nil) {
+      [summary appendFormat:@" (unknown %@)", key];
     }
-    if (_backControllers != nil) {
-      RNCPageCurlImageViewController *back = _backControllers[slotIndex];
-      back.slot = slot;
-      [ordered addObject:back];
-    }
-    slotIndex += 1;
   }
-  _orderedControllers = ordered;
+  NSLog(@"[page-curl] tuning:%@", summary);
+  if (!_renderer.hidden) {
+    [_renderer setNeedsDisplay];
+  }
 }
 
-// after a turn the displayed controller becomes "current" and the two others rotate with it;
-// the slot that fell off the far side is the only one that needs a new bake
-- (void)rotateSlotsToward:(NSString *)direction
+- (UIColor *)paper
 {
-  NSArray *previous = _slotControllers[RNCPageCurlSlotPrevious];
-  NSArray *current = _slotControllers[RNCPageCurlSlotCurrent];
-  NSArray *next = _slotControllers[RNCPageCurlSlotNext];
-  if ([direction isEqualToString:RNCPageCurlSlotNext]) {
-    _slotControllers[RNCPageCurlSlotPrevious] = current;
-    _slotControllers[RNCPageCurlSlotCurrent] = next;
-    _slotControllers[RNCPageCurlSlotNext] = previous;
-    [self relabelSlots];
-    [self blankSlot:RNCPageCurlSlotNext];
-  } else {
-    _slotControllers[RNCPageCurlSlotNext] = current;
-    _slotControllers[RNCPageCurlSlotCurrent] = previous;
-    _slotControllers[RNCPageCurlSlotPrevious] = next;
-    [self relabelSlots];
-    [self blankSlot:RNCPageCurlSlotPrevious];
-  }
-  NSLog(@"[page-curl] rotated slots toward %@; shown=%@", direction, [self shownSlot]);
+  UIColor *paper = _paperColor != nil ? RNCPageCurlColorFromCSS(_paperColor) : nil;
+  return paper ?: _adoptedPaper ?: [UIColor whiteColor];
 }
+
+- (void)applyColors
+{
+  if (_renderer == nil) {
+    return;
+  }
+  UIColor *paper = [self paper];
+  UIColor *back = _backColor != nil ? RNCPageCurlColorFromCSS(_backColor) : nil;
+  UIColor *shadow = _shadowColor != nil ? RNCPageCurlColorFromCSS(_shadowColor) : nil;
+  UIColor *highlight = _highlightColor != nil ? RNCPageCurlColorFromCSS(_highlightColor) : nil;
+  _renderer.paperColor = paper;
+  _renderer.backColor = back ?: RNCPageCurlFadedPaper(paper);
+  _renderer.shadowColor = shadow ?: [UIColor blackColor];
+  _renderer.shadowOpacity = _shadowOpacity != nil ? _shadowOpacity.doubleValue : 0.35;
+  _renderer.highlightColor = highlight ?: [UIColor whiteColor];
+  _renderer.highlightOpacity = _highlightOpacity != nil ? _highlightOpacity.doubleValue : 0.2;
+  NSLog(@"[page-curl] colors paper=%@ back=%@ shadow=%@@%.2f highlight=%@@%.2f", _renderer.paperColor, _renderer.backColor,
+        _renderer.shadowColor, _renderer.shadowOpacity, _renderer.highlightColor, _renderer.highlightOpacity);
+  if (!_renderer.hidden) {
+    [_renderer setNeedsDisplay];
+  }
+}
+
+- (void)adoptPaperColorFrom:(UIImage *)image
+{
+  CGImageRef cg = image.CGImage;
+  if (cg == nil) {
+    return;
+  }
+  unsigned char pixel[4] = {255, 255, 255, 255};
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, colorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  if (context != nil) {
+    // top-left corner is page margin in every layout we ship
+    CGImageRef corner = CGImageCreateWithImageInRect(cg, CGRectMake(2, 2, 1, 1));
+    CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), corner);
+    CGImageRelease(corner);
+    CGContextRelease(context);
+  }
+  CGColorSpaceRelease(colorSpace);
+  _adoptedPaper = [UIColor colorWithRed:pixel[0] / 255.0 green:pixel[1] / 255.0 blue:pixel[2] / 255.0 alpha:1];
+  [self applyColors];
+}
+
+#pragma mark - lifecycle
 
 - (void)emit:(NSString *)type direction:(NSString *)direction detail:(NSString *)detail
 {
@@ -343,39 +432,15 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
     return;
   }
   _enabled = YES;
-  BOOL spread = [self.spine isEqualToString:@"middle"];
-  NSLog(@"[page-curl] spine prop=%@ -> spread=%d", self.spine, spread);
-  [self buildControllersForSpread:spread];
+  _spread = [self.spine isEqualToString:@"middle"];
+  NSLog(@"[page-curl] spine prop=%@ -> spread=%d", self.spine, _spread);
 
-  UIPageViewControllerSpineLocation spine = spread ? UIPageViewControllerSpineLocationMid : UIPageViewControllerSpineLocationMin;
-  _pageController = [[UIPageViewController alloc]
-      initWithTransitionStyle:UIPageViewControllerTransitionStylePageCurl
-        navigationOrientation:UIPageViewControllerNavigationOrientationHorizontal
-                      options:@{UIPageViewControllerOptionSpineLocationKey: @(spine)}];
-  _pageController.dataSource = self;
-  _pageController.delegate = self;
-  // double-sided in both modes: a single sheet's reverse is our own paper-colored face instead
-  // of UIKit's white translucent rendering of the front
-  _pageController.doubleSided = YES;
-
-  UIResponder *responder = host;
-  while (responder != nil && ![responder isKindOfClass:[UIViewController class]]) {
-    responder = responder.nextResponder;
-  }
-  UIViewController *parent = (UIViewController *)responder;
-  NSLog(@"[page-curl] parent view controller: %@ spread=%d", parent, spread);
-  if (parent != nil) {
-    [parent addChildViewController:_pageController];
-  }
-  _pageController.view.frame = host.bounds;
-  _pageController.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-  _pageController.view.hidden = YES;
-  _pageController.view.backgroundColor = [UIColor clearColor];
-  [host addSubview:_pageController.view];
-  if (parent != nil) {
-    [_pageController didMoveToParentViewController:parent];
-  }
-  [self showSlot:RNCPageCurlSlotCurrent];
+  _renderer = [[RNCPageCurlRenderer alloc] initWithFrame:host.bounds];
+  _renderer.hidden = YES;
+  [host addSubview:_renderer];
+  [self applyColors];
+  [self applyTuning];
+  [self showCover];
 
   __weak __typeof(self) weakSelf = self;
   _touchObserver = [RNCPageCurlTouchObserver new];
@@ -387,12 +452,9 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
     if (strongSelf == nil) {
       return;
     }
-    NSLog(@"[page-curl] touches began; ready=%d (was hidden=%d)", strongSelf->_ready, strongSelf->_pageController.view.hidden);
+    NSLog(@"[page-curl] touches began; ready=%d", strongSelf->_ready);
     // a new touch supersedes the previous tap; its own touch end decides again
     strongSelf->_lockedByTap = NO;
-    if (strongSelf->_ready) {
-      strongSelf->_pageController.view.hidden = NO;
-    }
     [strongSelf makeWebPansYieldToCurl];
     [strongSelf emit:@"touch" direction:nil detail:nil];
   };
@@ -427,44 +489,53 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   };
   [host addGestureRecognizer:_touchObserver];
 
-  for (UIGestureRecognizer *recognizer in _pageController.gestureRecognizers) {
-    if ([recognizer isKindOfClass:[UIPanGestureRecognizer class]]) {
-      _pan = (UIPanGestureRecognizer *)recognizer;
-      [_pan addTarget:self action:@selector(onPan:)];
-      [host addGestureRecognizer:_pan];
-      NSLog(@"[page-curl] attached pan %@ to host", _pan);
-      [self makeWebPansYieldToCurl];
-    } else {
-      recognizer.enabled = NO;
-      NSLog(@"[page-curl] disabled recognizer %@", recognizer);
-    }
-  }
+  _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
+  _pan.maximumNumberOfTouches = 1;
+  _pan.delegate = self;
+  [host addGestureRecognizer:_pan];
+  NSLog(@"[page-curl] attached pan %@ to host", _pan);
+  [self makeWebPansYieldToCurl];
 }
 
-// WebKit's content view carries several pan recognizers (scroll views per overflow element, plus a
-// plain UIPanGestureRecognizer) that race the page controller's pan on horizontal drags. Every one
-// of them must wait for the curl pan to fail first.
+// While the curl is on the reader must never scroll by touch: every scroll view inside the webview
+// (the document's and WebKit's per-overflow-element ones, which it recreates as chunks load) has
+// user scrolling turned off, and the remaining pan and long-press recognizers wait for the curl pan.
+// Programmatic scrolling by the manager is unaffected. Rescanned at every touch-down.
 - (void)makeWebPansYieldToCurl
 {
-  if (_pan == nil || _webView == nil) {
+  [self setWebScrollingEnabled:NO];
+}
+
+- (void)setWebScrollingEnabled:(BOOL)enabled
+{
+  if (_webView == nil) {
     return;
   }
   NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:_webView];
-  NSUInteger count = 0;
+  NSUInteger recognizers = 0;
+  NSUInteger scrollViews = 0;
   while (stack.count > 0) {
     UIView *view = stack.lastObject;
     [stack removeLastObject];
+    if ([view isKindOfClass:[UIScrollView class]]) {
+      UIScrollView *scrollView = (UIScrollView *)view;
+      if (scrollView.scrollEnabled != enabled) {
+        scrollView.scrollEnabled = enabled;
+        scrollViews += 1;
+      }
+    }
     for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
       BOOL isPan = [recognizer isKindOfClass:[UIPanGestureRecognizer class]];
       BOOL isLongPress = [recognizer isKindOfClass:[UILongPressGestureRecognizer class]];
-      if ((isPan || isLongPress) && recognizer != _pan) {
+      if ((isPan || isLongPress) && recognizer != _pan && _pan != nil && !enabled) {
         [recognizer requireGestureRecognizerToFail:_pan];
-        count += 1;
+        recognizers += 1;
       }
     }
     [stack addObjectsFromArray:view.subviews];
   }
-  NSLog(@"[page-curl] %lu web pan recognizers now yield to the curl pan", (unsigned long)count);
+  NSLog(@"[page-curl] web scrolling %@: %lu scroll views changed, %lu recognizers yield to the curl pan", enabled ? @"restored" : @"off",
+        (unsigned long)scrollViews, (unsigned long)recognizers);
 }
 
 - (void)setSpine:(NSString *)spine
@@ -498,8 +569,9 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
 {
   NSLog(@"[page-curl] teardown");
   _enabled = NO;
+  [self stopAnimation];
+  [self setWebScrollingEnabled:YES];
   if (_pan != nil) {
-    [_pan removeTarget:self action:@selector(onPan:)];
     [_pan.view removeGestureRecognizer:_pan];
     _pan = nil;
   }
@@ -507,13 +579,10 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
     [_touchObserver.view removeGestureRecognizer:_touchObserver];
     _touchObserver = nil;
   }
-  if (_pageController != nil) {
-    [_pageController willMoveToParentViewController:nil];
-    [_pageController.view removeFromSuperview];
-    [_pageController removeFromParentViewController];
-    _pageController = nil;
-  }
+  [_renderer removeFromSuperview];
+  _renderer = nil;
   _transitionInFlight = NO;
+  _turnDirection = nil;
   _edgeEmitted = NO;
   _ready = NO;
   _cycleRunning = NO;
@@ -525,10 +594,10 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
 
 - (void)layoutWithBounds:(CGRect)bounds
 {
-  if (_pageController == nil) {
+  if (_renderer == nil) {
     return;
   }
-  _pageController.view.frame = bounds;
+  _renderer.frame = bounds;
   BOOL resized = !CGSizeEqualToSize(_lastSize, CGSizeZero) && !CGSizeEqualToSize(_lastSize, bounds.size);
   _lastSize = bounds.size;
   if (resized) {
@@ -536,114 +605,138 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   }
 }
 
-- (NSArray<RNCPageCurlImageViewController *> *)controllersForSlot:(NSString *)slot
+#pragma mark - slots
+
+- (RNCPageCurlSlot *)slot:(NSString *)name
 {
-  return _slotControllers[slot] ?: _slotControllers[RNCPageCurlSlotCurrent];
+  return _slots[name] ?: _slots[RNCPageCurlSlotCurrent];
 }
 
-- (void)showSlot:(NSString *)slot
+// after a turn the displayed slot becomes "current" and the two others rotate with it;
+// the slot that fell off the far side is the only one that needs a new bake
+- (void)rotateSlotsToward:(NSString *)direction
 {
-  NSArray *vcs = [self controllersForSlot:slot];
-  [_pageController setViewControllers:vcs
-                            direction:UIPageViewControllerNavigationDirectionForward
-                             animated:NO
-                           completion:nil];
-}
-
-- (NSString *)shownSlot
-{
-  RNCPageCurlImageViewController *shown = (RNCPageCurlImageViewController *)_pageController.viewControllers.firstObject;
-  return shown.slot ?: RNCPageCurlSlotCurrent;
-}
-
-- (BOOL)panActive
-{
-  return _pan.state == UIGestureRecognizerStateBegan || _pan.state == UIGestureRecognizerStateChanged;
-}
-
-- (void)hideIfIdle
-{
-  if (_coverHeld || _transitionInFlight || [self panActive]) {
-    return;
+  RNCPageCurlSlot *previous = _slots[RNCPageCurlSlotPrevious];
+  RNCPageCurlSlot *current = _slots[RNCPageCurlSlotCurrent];
+  RNCPageCurlSlot *next = _slots[RNCPageCurlSlotNext];
+  if ([direction isEqualToString:RNCPageCurlSlotNext]) {
+    _slots[RNCPageCurlSlotPrevious] = current;
+    _slots[RNCPageCurlSlotCurrent] = next;
+    _slots[RNCPageCurlSlotNext] = previous;
+    [self blankSlot:RNCPageCurlSlotNext];
+  } else {
+    _slots[RNCPageCurlSlotNext] = current;
+    _slots[RNCPageCurlSlotCurrent] = previous;
+    _slots[RNCPageCurlSlotPrevious] = next;
+    [self blankSlot:RNCPageCurlSlotPrevious];
   }
-  _pageController.view.hidden = YES;
+  NSLog(@"[page-curl] rotated slots toward %@", direction);
 }
 
-- (void)lock:(NSString *)reason
+- (void)assignImage:(UIImage *)image toSlot:(NSString *)name
 {
-  if (_ready) {
-    NSLog(@"[page-curl] ready -> 0 (%@)", reason);
-  }
-  _ready = NO;
-  [self hideIfIdle];
+  RNCPageCurlSlot *slot = [self slot:name];
+  slot.image = image;
+  slot.texture = image != nil ? [_renderer textureFromImage:image] : nil;
 }
 
-- (void)unlock:(NSString *)reason
+- (void)clearSlot:(NSString *)name
 {
-  if (!_ready) {
-    NSLog(@"[page-curl] ready -> 1 (%@)", reason);
-  }
-  _ready = YES;
-  [self emit:@"ready" direction:nil detail:reason];
+  NSLog(@"[page-curl] clear slot=%@ (absent)", name);
+  [self assignImage:nil toSlot:name];
+  [self slot:name].absent = YES;
 }
 
-- (void)assignImage:(UIImage *)image toSlot:(NSString *)slot
+- (void)blankSlot:(NSString *)name
 {
-  NSArray<RNCPageCurlImageViewController *> *vcs = [self controllersForSlot:slot];
-  if (!_spread || vcs.count == 1 || image == nil) {
-    for (RNCPageCurlImageViewController *vc in vcs) {
-      vc.imageView.image = image;
+  NSLog(@"[page-curl] blank slot=%@ (page exists, not baked)", name);
+  [self assignImage:nil toSlot:name];
+  [self slot:name].absent = NO;
+}
+
+#pragma mark - scenes
+
+- (CGRect)fullTexRect
+{
+  return CGRectMake(0, 0, 1, 1);
+}
+
+- (CGRect)leftTexRect
+{
+  return CGRectMake(0, 0, 0.5, 1);
+}
+
+- (CGRect)rightTexRect
+{
+  return CGRectMake(0.5, 0, 0.5, 1);
+}
+
+- (CGRect)leftHalf
+{
+  CGRect bounds = _renderer.bounds;
+  return CGRectMake(0, 0, bounds.size.width / 2, bounds.size.height);
+}
+
+- (CGRect)rightHalf
+{
+  CGRect bounds = _renderer.bounds;
+  return CGRectMake(bounds.size.width / 2, 0, bounds.size.width / 2, bounds.size.height);
+}
+
+// the current bake, flat, covering the whole view
+- (void)showCover
+{
+  RNCPageCurlSlot *current = [self slot:RNCPageCurlSlotCurrent];
+  _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+  _renderer.sheet = nil;
+  _renderer.sheetBackTexture = nil;
+  _renderer.curling = NO;
+  [_renderer renderNow];
+}
+
+// pages of the turn toward `direction`: what lies underneath, the sheet and what is on its back
+- (void)showTurnScene:(NSString *)direction
+{
+  BOOL next = [direction isEqualToString:RNCPageCurlSlotNext];
+  RNCPageCurlSlot *current = [self slot:RNCPageCurlSlotCurrent];
+  RNCPageCurlSlot *target = [self slot:direction];
+  if (!_spread) {
+    _renderer.mirrored = !next;
+    if (next) {
+      _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:target.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+      _renderer.sheet = [RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]];
+    } else {
+      _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+      _renderer.sheet = [RNCPageCurlPage pageWithTexture:target.texture rect:_renderer.bounds texRect:[self fullTexRect]];
     }
-    return;
+    _renderer.sheetBackTexture = nil;
+  } else if (next) {
+    _renderer.mirrored = NO;
+    _renderer.underPages = @[
+      [RNCPageCurlPage pageWithTexture:current.texture rect:[self leftHalf] texRect:[self leftTexRect]],
+      [RNCPageCurlPage pageWithTexture:target.texture rect:[self rightHalf] texRect:[self rightTexRect]],
+    ];
+    _renderer.sheet = [RNCPageCurlPage pageWithTexture:current.texture rect:[self rightHalf] texRect:[self rightTexRect]];
+    _renderer.sheetBackTexture = target.texture;
+    _renderer.sheetBackTexRect = [self leftTexRect];
+  } else {
+    _renderer.mirrored = YES;
+    _renderer.underPages = @[
+      [RNCPageCurlPage pageWithTexture:target.texture rect:[self leftHalf] texRect:[self leftTexRect]],
+      [RNCPageCurlPage pageWithTexture:current.texture rect:[self rightHalf] texRect:[self rightTexRect]],
+    ];
+    _renderer.sheet = [RNCPageCurlPage pageWithTexture:current.texture rect:[self leftHalf] texRect:[self leftTexRect]];
+    _renderer.sheetBackTexture = target.texture;
+    _renderer.sheetBackTexRect = [self rightTexRect];
   }
-  CGImageRef cg = image.CGImage;
-  size_t width = CGImageGetWidth(cg);
-  size_t height = CGImageGetHeight(cg);
-  CGImageRef left = CGImageCreateWithImageInRect(cg, CGRectMake(0, 0, width / 2, height));
-  CGImageRef right = CGImageCreateWithImageInRect(cg, CGRectMake(width / 2, 0, width - width / 2, height));
-  vcs[0].imageView.image = [UIImage imageWithCGImage:left scale:image.scale orientation:UIImageOrientationUp];
-  vcs[1].imageView.image = [UIImage imageWithCGImage:right scale:image.scale orientation:UIImageOrientationUp];
-  CGImageRelease(left);
-  CGImageRelease(right);
-}
-
-- (void)clearSlot:(NSString *)slot
-{
-  NSLog(@"[page-curl] clear slot=%@ (absent)", slot);
-  [self assignImage:nil toSlot:slot];
-  for (RNCPageCurlImageViewController *vc in [self controllersForSlot:slot]) {
-    vc.absent = YES;
+  _renderer.curling = YES;
+  NSMutableString *scene = [NSMutableString string];
+  for (RNCPageCurlPage *page in _renderer.underPages) {
+    [scene appendFormat:@" under rect=%@ tex=%@ %@;", NSStringFromCGRect(page.rect), NSStringFromCGRect(page.texRect), page.texture ? @"image" : @"paper"];
   }
-}
-
-- (void)blankSlot:(NSString *)slot
-{
-  NSLog(@"[page-curl] blank slot=%@ (page exists, not baked)", slot);
-  [self assignImage:nil toSlot:slot];
-  for (RNCPageCurlImageViewController *vc in [self controllersForSlot:slot]) {
-    vc.absent = NO;
-  }
-}
-
-- (void)adoptPaperColorFrom:(UIImage *)image
-{
-  CGImageRef cg = image.CGImage;
-  if (cg == nil) {
-    return;
-  }
-  unsigned char pixel[4] = {255, 255, 255, 255};
-  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  CGContextRef context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, colorSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-  if (context != nil) {
-    // top-left corner is page margin in every layout we ship
-    CGImageRef corner = CGImageCreateWithImageInRect(cg, CGRectMake(2, 2, 1, 1));
-    CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), corner);
-    CGImageRelease(corner);
-    CGContextRelease(context);
-  }
-  CGColorSpaceRelease(colorSpace);
-  UIColor *paper = [UIColor colorWithRed:pixel[0] / 255.0 green:pixel[1] / 255.0 blue:pixel[2] / 255.0 alpha:1];
-  [self paintPaper:paper];
+  [scene appendFormat:@" sheet rect=%@ tex=%@ %@ back=%@ %@", NSStringFromCGRect(_renderer.sheet.rect), NSStringFromCGRect(_renderer.sheet.texRect),
+   _renderer.sheet.texture ? @"image" : @"paper", NSStringFromCGRect(_renderer.sheetBackTexRect), _renderer.sheetBackTexture ? @"image" : @"color"];
+  NSLog(@"[page-curl] scene %@ mirrored=%d:%@", direction, _renderer.mirrored, scene);
 }
 
 #pragma mark - webview bridge
@@ -672,9 +765,7 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
       return;
     }
     [strongSelf assignImage:image toSlot:slot];
-    for (RNCPageCurlImageViewController *vc in [strongSelf controllersForSlot:slot]) {
-      vc.absent = NO;
-    }
+    [strongSelf slot:slot].absent = NO;
     if ([slot isEqualToString:RNCPageCurlSlotCurrent] && strongSelf->_paperColor == nil) {
       [strongSelf adoptPaperColorFrom:image];
     }
@@ -802,7 +893,7 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
 {
   _cycleRunning = NO;
   _coverHeld = NO;
-  _pageController.view.hidden = YES;
+  _renderer.hidden = YES;
   if (!ok) {
     NSLog(@"[page-curl] cycle failed (%@); locked until the next settle", reason);
     _ready = NO;
@@ -826,15 +917,15 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   _lockedByTap = NO;
   _ready = NO;
   CFTimeInterval start = CACurrentMediaTime();
-  NSLog(@"[page-curl] full cycle start page=%ld/%ld chunk=%ld last=%d shown=%@", (long)_page, (long)_totalPages, (long)_chunkIndex, _isLastChunk, [self shownSlot]);
+  NSLog(@"[page-curl] full cycle start page=%ld/%ld chunk=%ld last=%d", (long)_page, (long)_totalPages, (long)_chunkIndex, _isLastChunk);
 
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
   [steps addObject:[self stepSnapshot:RNCPageCurlSlotCurrent]];
   [steps addObject:[self stepBlock:^{
     __strong __typeof(weakSelf) strongSelf = weakSelf;
-    [strongSelf showSlot:RNCPageCurlSlotCurrent];
-    strongSelf->_pageController.view.hidden = NO;
+    [strongSelf showCover];
+    strongSelf->_renderer.hidden = NO;
   }]];
   BOOL moved = _page < _totalPages || _page > 0;
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotNext to:steps];
@@ -876,7 +967,6 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
     }];
     return;
   }
-  [self rotateSlotsToward:direction];
   _page = target;
   _cycleRunning = YES;
   _coverHeld = YES;
@@ -914,7 +1004,7 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
 {
   NSString *type = message[@"type"];
   NSLog(@"[page-curl] message %@ (ready=%d cycle=%d cover=%d awaiting=%d tapLock=%d)", message, _ready, _cycleRunning, _coverHeld, _awaitingSettle, _lockedByTap);
-  if (_pageController == nil) {
+  if (_renderer == nil) {
     return;
   }
   if ([type isEqualToString:@"settled"]) {
@@ -934,6 +1024,16 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
     [self lock:@"unsettled"];
     return;
   }
+  if ([type isEqualToString:@"chunkFade"]) {
+    // the manager has hidden the old chunk and will fade the new one in; after a turn onto blank
+    // paper the cover is dropped so that fade shows, and the rebake after the settle covers again
+    if (_awaitingSettle && !_cycleRunning && !_transitionInFlight) {
+      NSLog(@"[page-curl] chunk fade: uncovering the webview");
+      _coverHeld = NO;
+      _renderer.hidden = YES;
+    }
+    return;
+  }
   if ([type isEqualToString:@"touchEnd"]) {
     if (!_lockedByTap) {
       return;
@@ -949,281 +1049,323 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
   NSLog(@"[page-curl] unknown message type %@", type);
 }
 
+#pragma mark - locking
+
+- (BOOL)panActive
+{
+  return _pan.state == UIGestureRecognizerStateBegan || _pan.state == UIGestureRecognizerStateChanged;
+}
+
+- (void)hideIfIdle
+{
+  if (_coverHeld || _transitionInFlight || [self panActive]) {
+    return;
+  }
+  _renderer.hidden = YES;
+}
+
+- (void)lock:(NSString *)reason
+{
+  if (_ready) {
+    NSLog(@"[page-curl] ready -> 0 (%@)", reason);
+  }
+  _ready = NO;
+  [self hideIfIdle];
+}
+
+- (void)unlock:(NSString *)reason
+{
+  if (!_ready) {
+    NSLog(@"[page-curl] ready -> 1 (%@)", reason);
+  }
+  _ready = YES;
+  [self emit:@"ready" direction:nil detail:reason];
+  [self beginTurnFromWaitingPan];
+}
+
 #pragma mark - gestures
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
+{
+  if (gestureRecognizer != _pan) {
+    return YES;
+  }
+  // the curl pan claims every drag while the curl is on, so WebKit's pans never scroll the page
+  // themselves; if the bakes are still being made the turn starts when they are ready
+  NSLog(@"[page-curl] pan should begin? ready=%d inFlight=%d", _ready, _transitionInFlight);
+  return !_transitionInFlight;
+}
+
+// a pan that began before the bakes were ready: start its turn now, from the original touch-down
+- (void)beginTurnFromWaitingPan
+{
+  if (![self panActive] || _turnDirection != nil || _transitionInFlight || _turnDeclined) {
+    return;
+  }
+  CGPoint touchDown = _touchObserver.startPoint;
+  CGPoint location = [_pan locationInView:_hostView];
+  CGFloat dx = location.x - touchDown.x;
+  if (dx == 0) {
+    return;
+  }
+  NSLog(@"[page-curl] bakes ready during a waiting pan; starting its turn (dx=%.0f)", dx);
+  [self beginTurn:dx < 0 ? RNCPageCurlSlotNext : RNCPageCurlSlotPrevious from:touchDown];
+  _turnDeclined = _turnDirection == nil;
+  if (_turnDirection != nil) {
+    [self moveTurnTo:location];
+  }
+}
 
 - (void)onPan:(UIPanGestureRecognizer *)pan
 {
   CGPoint translation = [pan translationInView:_hostView];
-  if (pan.state != UIGestureRecognizerStateChanged) {
-    NSLog(@"[page-curl] pan state=%ld translation=%.1f,%.1f inFlight=%d hidden=%d", (long)pan.state, translation.x, translation.y, _transitionInFlight, _pageController.view.hidden);
+  CGPoint location = [pan locationInView:_hostView];
+  NSLog(@"[page-curl] pan state=%ld location=%.1f,%.1f translation=%.1f,%.1f touchDown=%@ inFlight=%d turn=%@", (long)pan.state, location.x, location.y,
+        translation.x, translation.y, NSStringFromCGPoint(_touchObserver.startPoint), _transitionInFlight, _turnDirection);
+  BOOL moving = pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged;
+  // the pan's translation restarts from zero where recognition began; the observer has the touch-down
+  CGPoint touchDown = _touchObserver.startPoint;
+  CGFloat dx = location.x - touchDown.x;
+  if (_turnDirection == nil && moving && dx != 0 && !_transitionInFlight && !_turnDeclined) {
+    if (!_ready) {
+      if (pan.state == UIGestureRecognizerStateBegan) {
+        NSLog(@"[page-curl] pan began before the bakes are ready; holding the drag until they are");
+      }
+      return;
+    }
+    NSString *direction = dx < 0 ? RNCPageCurlSlotNext : RNCPageCurlSlotPrevious;
+    [self beginTurn:direction from:touchDown];
+    _turnDeclined = _turnDirection == nil;
   }
-  if (pan.state == UIGestureRecognizerStateEnded && _transitionInFlight) {
-    // UIKit's completion curve is fixed; scale its tempo with the release velocity so a gentle
-    // release settles slowly and a flick lands fast
-    CGPoint velocity = [pan velocityInView:_hostView];
-    double speed = MIN(1.3, MAX(0.45, 0.45 + fabs(velocity.x) / 3000.0));
-    CALayer *layer = _pageController.view.layer;
-    CFTimeInterval now = CACurrentMediaTime();
-    CFTimeInterval local = [layer convertTime:now fromLayer:nil];
-    layer.timeOffset = local;
-    layer.beginTime = now;
-    layer.speed = (float)speed;
-    NSLog(@"[page-curl] release velocity=%.0f -> completion speed %.2f", velocity.x, speed);
-  }
-  if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled ||
-      pan.state == UIGestureRecognizerStateFailed) {
-    _edgeEmitted = NO;
-    if (!_transitionInFlight) {
-      NSLog(@"[page-curl] pan ended without a transition (ready=%d)", _ready);
+  if (_turnDirection == nil) {
+    if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled ||
+        pan.state == UIGestureRecognizerStateFailed) {
+      _turnDeclined = NO;
+      NSLog(@"[page-curl] pan ended without a turn (ready=%d)", _ready);
       [self hideIfIdle];
       [self runPendingSettle];
     }
+    return;
+  }
+  if (pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged) {
+    [self moveTurnTo:location];
+    return;
+  }
+  if (pan.state == UIGestureRecognizerStateEnded) {
+    [self releaseTurnWithVelocity:[pan velocityInView:_hostView]];
+    return;
+  }
+  if (pan.state == UIGestureRecognizerStateCancelled || pan.state == UIGestureRecognizerStateFailed) {
+    [self releaseTurnWithVelocity:CGPointZero];
   }
 }
 
-- (void)resetCompletionSpeed
-{
-  CALayer *layer = _pageController.view.layer;
-  if (layer.speed != 1.0f) {
-    layer.speed = 1.0f;
-    layer.timeOffset = 0;
-    layer.beginTime = 0;
-  }
-}
+#pragma mark - turns
 
-- (nullable UIViewController *)neighborOf:(UIViewController *)viewController offset:(NSInteger)offset direction:(NSString *)direction
+- (void)beginTurn:(NSString *)direction from:(CGPoint)start
 {
-  NSInteger index = [_orderedControllers indexOfObject:(RNCPageCurlImageViewController *)viewController];
-  RNCPageCurlImageViewController *from = (RNCPageCurlImageViewController *)viewController;
-  if (index == NSNotFound) {
-    return nil;
+  RNCPageCurlSlot *target = [self slot:direction];
+  if (target.absent) {
+    NSLog(@"[page-curl] no page toward %@; no curl", direction);
+    return;
   }
-  NSInteger target = index + offset;
-  if (target < 0 || target >= (NSInteger)_orderedControllers.count) {
-    return nil;
-  }
-  RNCPageCurlImageViewController *candidate = _orderedControllers[target];
-  // a back face is only ever shown on the way to the front page beyond it
-  RNCPageCurlImageViewController *landing = candidate;
-  if (candidate.back) {
-    NSInteger landingIndex = target + offset;
-    if (landingIndex < 0 || landingIndex >= (NSInteger)_orderedControllers.count) {
-      return nil;
-    }
-    landing = _orderedControllers[landingIndex];
-  }
-  BOOL hasImage = landing.imageView.image != nil;
-  NSLog(@"[page-curl] dataSource %@(%@/%ld%@) -> %@/%ld%@ %@", direction, from.slot, (long)from.half, from.back ? @" back" : @"",
-        candidate.slot, (long)candidate.half, candidate.back ? @" back" : @"",
-        hasImage ? @"ok" : (landing.absent ? @"ABSENT" : @"BLANK"));
-  if (!_ready) {
-    NSLog(@"[page-curl] bakes not ready; no curl");
-    return nil;
-  }
-  _pageController.view.hidden = NO;
-  if (landing.absent) {
-    return nil;
-  }
-  if (!hasImage && !_edgeEmitted && ![landing.slot isEqualToString:from.slot]) {
+  if (target.texture == nil && !_edgeEmitted) {
     _edgeEmitted = YES;
     [self emit:@"edge" direction:direction detail:nil];
   }
-  return candidate;
-}
-
-- (nullable UIViewController *)pageViewController:(UIPageViewController *)pageViewController
-                viewControllerBeforeViewController:(UIViewController *)viewController
-{
-  return [self neighborOf:viewController offset:-1 direction:@"previous"];
-}
-
-- (nullable UIViewController *)pageViewController:(UIPageViewController *)pageViewController
-                 viewControllerAfterViewController:(UIViewController *)viewController
-{
-  return [self neighborOf:viewController offset:1 direction:@"next"];
-}
-
-- (UIPageViewControllerSpineLocation)pageViewController:(UIPageViewController *)pageViewController
-                   spineLocationForInterfaceOrientation:(UIInterfaceOrientation)orientation
-{
-  NSLog(@"[page-curl] spineLocationForInterfaceOrientation %ld (spread=%d)", (long)orientation, _spread);
-  [self showSlot:[self shownSlot]];
-  return _spread ? UIPageViewControllerSpineLocationMid : UIPageViewControllerSpineLocationMin;
-}
-
-- (void)pageViewController:(UIPageViewController *)pageViewController
-    willTransitionToViewControllers:(NSArray<UIViewController *> *)pendingViewControllers
-{
+  BOOL next = [direction isEqualToString:RNCPageCurlSlotNext];
+  _turnDirection = direction;
+  _turnReversed = !next && !_spread;
   _transitionInFlight = YES;
   // locked for the whole turn; a cancelled turn hands the still-valid bakes back
   _ready = NO;
-  RNCPageCurlImageViewController *pending = (RNCPageCurlImageViewController *)pendingViewControllers.firstObject;
-  NSLog(@"[page-curl] willTransitionTo %@ (%lu controllers)", pending.slot, (unsigned long)pendingViewControllers.count);
-  [self applyCurlLighting];
-  __weak __typeof(self) weakSelf = self;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [weakSelf applyCurlLighting];
-  });
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    [weakSelf applyCurlLighting];
-  });
-  if (!_dumpedCurlLayers) {
-    _dumpedCurlLayers = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-      [weakSelf dumpCurlLayers];
-    });
-  }
+  [self showTurnScene:direction];
+  _turnSheetRect = _renderer.sheet.rect;
+  CGFloat width = _turnSheetRect.size.width;
+  CGFloat height = _turnSheetRect.size.height;
+  _turnRadiusMax = MIN([self tune:@"radiusMax"], width * [self tune:@"radiusFraction"]);
+  _renderer.curlRadiusMax = _turnRadiusMax;
+  // the grabbed point stays under the finger, so the fold forms right next to it; a touch near the
+  // spine grabs further out instead, since a point 70 pt from the hinge flips fully in 140 pt of drag
+  CGFloat grabMin = width * MIN(MAX([self tune:@"grabMinFraction"], 0), 1);
+  _turnStart = CGPointMake(MIN(MAX([self localXFor:start.x], grabMin), width), MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
+  _turnRest = _turnReversed ? [self turnedFinger] : _turnStart;
+  _turnTouchDown = CGPointMake([self localXFor:start.x], start.y - _turnSheetRect.origin.y);
+  _renderer.curlStart = _turnStart;
+  NSLog(@"[page-curl] turn %@ begins at %@ grab=%@ sheet=%@ mirrored=%d reversed=%d radiusMax=%.0f", direction, NSStringFromCGPoint(start),
+        NSStringFromCGPoint(_turnStart), NSStringFromCGRect(_turnSheetRect), _renderer.mirrored, _turnReversed, _turnRadiusMax);
+  [self applyFinger:_turnRest];
+  // the layer would otherwise show whatever it drew last for a frame
+  [_renderer renderNow];
+  _renderer.hidden = NO;
 }
 
-// UIKit's curl is a private "pageCurl" Core Animation filter named "curl" on the curling layers;
-// its declared inputs are inputFrontColor (a multiply tint on the page image, white by default),
-// inputShadowColor (gray 0.15 by default), inputTime, inputAngle and inputRadius. A 0.15 gray
-// shadow is lighter than a black page, so on dark paper the fold shows as a pale band; the shadow
-// is re-derived from the paper instead.
-- (void)applyCurlLighting
+- (CGFloat)localXFor:(CGFloat)x
 {
-  UIColor *paper = _paperColor != nil ? RNCPageCurlColorFromCSS(_paperColor) : nil;
-  if (paper == nil || _pageController == nil) {
-    return;
-  }
-  CGFloat r = 1, g = 1, b = 1, a = 1;
-  [paper getRed:&r green:&g blue:&b alpha:&a];
-  CGFloat keep = 0.15;
-  UIColor *shadow = [UIColor colorWithRed:r * keep green:g * keep blue:b * keep alpha:1];
-  NSUInteger count = [self applyCurlShadow:shadow toLayer:_pageController.view.layer];
-  if (count > 0) {
-    NSLog(@"[page-curl] curl shadow %@ applied to %lu layers", shadow, (unsigned long)count);
-  }
+  return _renderer.mirrored ? CGRectGetMaxX(_turnSheetRect) - x : x - _turnSheetRect.origin.x;
 }
 
-- (NSUInteger)applyCurlShadow:(UIColor *)shadow toLayer:(CALayer *)layer
+// where the grabbed point sits once the sheet lies flat on the other side: mirrored across the spine,
+// less the part of the flattening that settleGain lets the finger skip
+- (CGPoint)turnedFinger
 {
-  NSUInteger count = 0;
-  for (id filter in layer.filters) {
-    NSString *type = nil;
-    @try {
-      type = [filter valueForKey:@"type"];
-    } @catch (NSException *exception) {
-      type = nil;
+  CGFloat gain = MAX([self tune:@"settleGain"], 1);
+  CGFloat skipped = M_PI * _turnRadiusMax * (1 - 1 / gain);
+  return CGPointMake(-_turnStart.x + skipped, _turnStart.y);
+}
+
+// the grabbed point follows the finger 1:1
+- (void)moveTurnTo:(CGPoint)location
+{
+  CGPoint local = CGPointMake([self localXFor:location.x], location.y - _turnSheetRect.origin.y);
+  CGPoint finger = CGPointMake(_turnRest.x + local.x - _turnTouchDown.x, _turnRest.y + local.y - _turnTouchDown.y);
+  finger.x = MIN(MAX(finger.x, [self turnedFinger].x), _turnStart.x);
+  finger.y = MIN(MAX(finger.y, 0), _turnSheetRect.size.height);
+  [self applyFinger:finger];
+}
+
+- (void)applyFinger:(CGPoint)finger
+{
+  CGPoint asked = finger;
+  CGFloat dx = MAX(_turnStart.x - finger.x, 0);
+  CGFloat dy = _turnStart.y - finger.y;
+  // the fold's tilt follows the vertical offset against the horizontal drag plus a softness constant, so
+  // a small vertical move tilts it a little instead of flipping it; the fold advances by the drag's
+  // projection on that direction, so a vertical wiggle barely moves it
+  CGFloat soft = MAX([self tune:@"tiltSoftness"], 0);
+  CGFloat ex = dx + soft;
+  CGFloat norm = sqrt(ex * ex + dy * dy);
+  CGFloat nx = 1, ny = 0;
+  if (norm > 0.5) {
+    nx = ex / norm;
+    ny = dy / norm;
+  }
+  CGFloat distance = MAX(dx * nx + dy * ny, 0);
+  // the sheet is hinged along the whole spine (local x = 0, y in 0..h). The fold line sits
+  // (distance + pi R) / 2 behind the grab point along n; it must leave every spine point on the
+  // flat side, so the tilt gives way first, then the bend flattens, then the finger is held back.
+  CGFloat farthest = MAX(_turnStart.y, _turnSheetRect.size.height - _turnStart.y);
+  CGFloat room = _turnStart.x * nx - fabs(ny) * farthest;
+  // paper lifts into its full curve as soon as it is pulled: the bend is complete bendInDistance into the drag
+  CGFloat wantedRadius = _turnRadiusMax * MIN(1, distance / MAX([self tune:@"bendInDistance"], 1));
+  CGFloat need = (distance + M_PI * wantedRadius) / 2;
+  if (need > room && fabs(ny) > 0.0005) {
+    // the largest tilt that leaves room for the full bend (room falls as the tilt grows)
+    CGFloat low = 0, high = fabs(ny);
+    for (int i = 0; i < 30; i++) {
+      CGFloat mid = (low + high) / 2;
+      CGFloat midRoom = _turnStart.x * sqrt(1 - mid * mid) - mid * farthest;
+      if (need > midRoom) {
+        high = mid;
+      } else {
+        low = mid;
+      }
     }
-    if (![type isEqualToString:@"pageCurl"]) {
-      continue;
-    }
-    NSString *name = [filter valueForKey:@"name"] ?: @"curl";
-    [layer setValue:(id)shadow.CGColor forKeyPath:[NSString stringWithFormat:@"filters.%@.inputShadowColor", name]];
-    count += 1;
+    ny = copysign(low, ny);
+    nx = sqrt(1 - ny * ny);
+    room = _turnStart.x * nx - fabs(ny) * farthest;
   }
-  for (CALayer *sublayer in layer.sublayers) {
-    count += [self applyCurlShadow:shadow toLayer:sublayer];
+  if (distance / 2 > room) {
+    nx = 1;
+    ny = 0;
+    room = _turnStart.x;
+    distance = MIN(distance, 2 * room);
   }
-  return count;
+  finger = CGPointMake(_turnStart.x - nx * distance, _turnStart.y - ny * distance);
+  _turnFinger = finger;
+  // once the fold reaches the spine the bend must flatten, which slides the sheet by pi R; settleGain
+  // lets the finger drive that last phase faster so it takes fewer points of travel
+  CGFloat gain = MAX([self tune:@"settleGain"], 1);
+  CGFloat settleStart = M_PI * wantedRadius / 2;
+  CGFloat foldFree = room - distance / 2;
+  if (foldFree < settleStart) {
+    foldFree = MAX(settleStart - (settleStart - foldFree) * gain, 0);
+    distance = 2 * (room - foldFree);
+    finger = CGPointMake(_turnStart.x - nx * distance, _turnStart.y - ny * distance);
+  }
+  CGFloat radius = MIN(wantedRadius, MAX(2 * (room - distance / 2) / M_PI, 0));
+  // a zero drag is a flat sheet: while the bend forms, the fold starts past the outer edge and sweeps
+  // in, instead of sitting at the grab point with everything beyond it mirrored onto itself
+  CGFloat bendIn = MAX([self tune:@"bendInDistance"], 1);
+  CGFloat settle = MAX(0, 1 - distance / bendIn);
+  CGFloat foldOffset = settle * (_turnSheetRect.size.width - _turnStart.x + M_PI * radius / 2 + 4);
+  CGFloat foldX = _turnStart.x + nx * foldOffset - nx * (distance + M_PI * radius) / 2;
+  _renderer.curlStart = CGPointMake(_turnStart.x + nx * foldOffset, _turnStart.y + ny * foldOffset);
+  _renderer.curlFinger = CGPointMake(finger.x + nx * foldOffset, finger.y + ny * foldOffset);
+  _renderer.curlRadius = radius;
+  _renderer.curlBendStrength = MIN(1, distance / MAX([self tune:@"bendDarkenIn"], 1));
+  _renderer.curlProgress = MIN(MAX((_turnStart.x - foldX) / MAX(_turnStart.x, 1), 0), 1);
+  NSLog(@"[page-curl] finger %.1f,%.1f (asked %.1f,%.1f grab=%.1f,%.1f distance=%.1f room=%.1f foldOffset=%.1f foldX=%.1f) -> %@", finger.x, finger.y,
+        asked.x, asked.y, _turnStart.x, _turnStart.y, distance, room, foldOffset, foldX, [_renderer curlDescription]);
+  [_renderer setNeedsDisplay];
 }
 
-// spike diagnostics, once per process: what UIKit builds for the curl. Findings on iOS 26.4:
-// two layers carry a CAFilter type "pageCurl" named "curl" (one front-only, one back-only);
-// its declared inputs are inputAngle, inputBackEnabled, inputEndAngle, inputFrontColor (a
-// multiply tint on the page image), inputFrontEnabled, inputRadius, inputShadowBounds,
-// inputShadowColor, inputStartAngle and inputTime. The pale highlight along the fold is added
-// by the shader itself and survives a pure black back face; nothing declared controls it.
-- (void)dumpCurlLayers
+// 0 at the start of the turn, 1 when the page has fully turned
+- (CGFloat)turnProgress
 {
-  NSLog(@"[page-curl] layer dump begin");
-  [self dumpLayer:_pageController.view.layer depth:0];
-  NSLog(@"[page-curl] layer dump end");
+  CGFloat progress = _renderer.curlProgress;
+  return _turnReversed ? 1 - progress : progress;
 }
 
-- (void)dumpLayer:(CALayer *)layer depth:(NSInteger)depth
+- (void)releaseTurnWithVelocity:(CGPoint)velocity
 {
-  NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@" " startingAtIndex:0];
-  NSMutableString *line = [NSMutableString stringWithFormat:@"%@%@ frame=%@ hidden=%d opacity=%.2f", indent, NSStringFromClass(layer.class), NSStringFromCGRect(layer.frame), layer.hidden, layer.opacity];
-  if (layer.delegate != nil) {
-    [line appendFormat:@" delegate=%@", NSStringFromClass([layer.delegate class])];
-  }
-  NSArray *filters = layer.filters;
-  if (filters.count > 0) {
-    [line appendFormat:@" filters=%@", filters];
-  }
-  if (layer.compositingFilter != nil) {
-    [line appendFormat:@" compositingFilter=%@", layer.compositingFilter];
-  }
-  if (layer.backgroundFilters.count > 0) {
-    [line appendFormat:@" backgroundFilters=%@", layer.backgroundFilters];
-  }
-  NSLog(@"[page-curl] %@", line);
-  for (id filter in filters) {
-    @try {
-      NSString *type = [filter valueForKey:@"type"];
-      NSString *description = [[filter description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-      NSLog(@"[page-curl] %@  filter class=%@ type=%@ name=%@ description=%@", indent, NSStringFromClass([filter class]), type, [filter valueForKey:@"name"], description);
-      // the filter's selectors reveal its input names
-      unsigned int methodCount = 0;
-      Method *methods = class_copyMethodList([filter class], &methodCount);
-      NSMutableArray<NSString *> *selectors = [NSMutableArray array];
-      for (unsigned int i = 0; i < methodCount; i++) {
-        [selectors addObject:NSStringFromSelector(method_getName(methods[i]))];
-      }
-      free(methods);
-      NSLog(@"[page-curl] %@  filter selectors: %@", indent, [selectors componentsJoinedByString:@" "]);
-      unsigned int propertyCount = 0;
-      objc_property_t *properties = class_copyPropertyList([filter class], &propertyCount);
-      NSMutableArray<NSString *> *names = [NSMutableArray array];
-      for (unsigned int i = 0; i < propertyCount; i++) {
-        [names addObject:[NSString stringWithUTF8String:property_getName(properties[i])]];
-      }
-      free(properties);
-      NSLog(@"[page-curl] %@  filter properties: %@", indent, [names componentsJoinedByString:@" "]);
-      unsigned int classMethodCount = 0;
-      Method *classMethods = class_copyMethodList(object_getClass([filter class]), &classMethodCount);
-      NSMutableArray<NSString *> *classSelectors = [NSMutableArray array];
-      for (unsigned int i = 0; i < classMethodCount; i++) {
-        [classSelectors addObject:NSStringFromSelector(method_getName(classMethods[i]))];
-      }
-      free(classMethods);
-      NSLog(@"[page-curl] %@  filter class selectors: %@", indent, [classSelectors componentsJoinedByString:@" "]);
-      // CAMLTypeForKey: answers with a type only for keys the filter type actually declares
-      SEL camlType = NSSelectorFromString(@"CAMLTypeForKey:");
-      // every input key string QuartzCore ships (strings of the simulator runtime binary)
-      NSArray<NSString *> *candidates = @[@"inputAberrationAmount", @"inputAberrationAngle", @"inputAberrationHeight", @"inputAberrationOffset", @"inputAdaptive", @"inputAddColor", @"inputAddWhite", @"inputAllowsGroup", @"inputAlphaValues", @"inputAmount", @"inputAngle", @"inputAspectRatio", @"inputBackdropAware", @"inputBackEnabled", @"inputBias", @"inputBleedAmount", @"inputBleedBlurRadius", @"inputBleedColorMatrixBlack", @"inputBleedColorMatrixFillColor", @"inputBleedColorMatrixSaturation", @"inputBleedColorMatrixWhite", @"inputBleedDarkenBlend", @"inputBleedHeight", @"inputBleedOffset", @"inputBleedOpacity", @"inputBleedSaturation", @"inputBlueOffset", @"inputBlueValues", @"inputBlurRadius", @"inputBounds", @"inputClamp", @"inputClampPreserveHue", @"inputColor", @"inputColorMap", @"inputColorMatrix", @"inputCount", @"inputDisplayInvertAware", @"inputDither", @"inputEdgeEnd", @"inputEdgeOpacityEnd", @"inputEdgeOpacityStart", @"inputEdgeStart", @"inputEnd", @"inputEndAngle", @"inputExtendEdges", @"inputFaceColorMatrixBlack", @"inputFaceColorMatrixFillColor", @"inputFaceColorMatrixSaturation", @"inputFaceColorMatrixWhite", @"inputFaceOpacity", @"inputFade", @"inputFrontColor", @"inputFrontEnabled", @"inputGreenOffset", @"inputGreenValues", @"inputHardEdges", @"inputHSVSpace", @"inputInnerRefractionAmount", @"inputInnerRefractionHeight", @"inputIntermediateBitDepth", @"inputLinear", @"inputMaskImage", @"inputMaxHeadroom", @"inputNormalizeEdges", @"inputNormalizeEdgesTransparent", @"inputOffset", @"inputOuterRefractionAmount", @"inputOuterRefractionHeight", @"inputOverlayOpacity", @"inputPremultipliedValues", @"inputQuality", @"inputRadius", @"inputRedOffset", @"inputRedValues", @"inputRefractionAmount", @"inputRefractionAngle", @"inputRefractionHeight", @"inputRefractionOffset", @"inputRefractionOpacity", @"inputReversed", @"inputScale", @"inputSDRHoldingToneEnabled", @"inputSDRHoldingToneWhite", @"inputSDRShadowOpacity", @"inputShadowAmount", @"inputShadowBlurRadius", @"inputShadowBounds", @"inputShadowColor", @"inputShadowColorMatrixBlack", @"inputShadowColorMatrixFillColor", @"inputShadowColorMatrixSaturation", @"inputShadowColorMatrixWhite", @"inputShadowDistanceOffset", @"inputShadowHeight", @"inputShadowOffset", @"inputShadowOpacity", @"inputShadowRadius", @"inputShadowVibrancyContribution", @"inputSourceSublayerName", @"inputStart", @"inputStartAngle", @"inputTime", @"inputValues", @"inputValuesTransparent"];
-      NSMutableArray<NSString *> *declared = [NSMutableArray array];
-      for (NSString *key in candidates) {
-        id typeName = nil;
-        if ([filter respondsToSelector:camlType]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-          typeName = [filter performSelector:camlType withObject:key];
-#pragma clang diagnostic pop
-        }
-        id value = nil;
-        @try {
-          value = [filter valueForKey:key];
-        } @catch (NSException *exception) {
-          value = nil;
-        }
-        if (typeName != nil || value != nil) {
-          NSString *text = [[value description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-          [declared addObject:[NSString stringWithFormat:@"%@ (%@) = %@", key, typeName ?: @"?", text ?: @"nil"]];
-        }
-      }
-      NSLog(@"[page-curl] %@  filter declared inputs: %@", indent, [declared componentsJoinedByString:@" | "]);
-    } @catch (NSException *exception) {
-      NSLog(@"[page-curl] %@  filter %@ (no introspection: %@)", indent, filter, exception.reason);
-    }
-  }
-  for (CALayer *sublayer in layer.sublayers) {
-    [self dumpLayer:sublayer depth:depth + 1];
+  BOOL next = [_turnDirection isEqualToString:RNCPageCurlSlotNext];
+  CGFloat toward = next ? -velocity.x : velocity.x;
+  CGFloat progress = [self turnProgress];
+  // a drag past completeFraction of the turn, or a flick faster than flickVelocity, completes it
+  BOOL completes = fabs(velocity.x) > [self tune:@"flickVelocity"] ? toward > 0 : progress > [self tune:@"completeFraction"];
+  CGFloat speedMin = [self tune:@"speedMin"];
+  CGFloat speed = MIN([self tune:@"speedMax"], MAX(speedMin, speedMin + fabs(velocity.x) / 3000.0));
+  CGFloat remaining = completes ? 1 - progress : progress;
+  CGFloat duration = ([self tune:@"durationBase"] + [self tune:@"durationPerRemaining"] * remaining) / speed;
+  CGPoint flat = _turnStart;
+  CGPoint turned = [self turnedFinger];
+  BOOL endsTurned = completes != _turnReversed;
+  NSLog(@"[page-curl] release velocity=%.0f progress=%.2f -> %@ in %.0fms", velocity.x, progress, completes ? @"complete" : @"cancel", duration * 1000);
+  [self animateFingerTo:endsTurned ? turned : flat duration:duration completes:completes];
+}
+
+- (void)animateFingerTo:(CGPoint)target duration:(CFTimeInterval)duration completes:(BOOL)completes
+{
+  [self stopAnimation];
+  _animationFrom = _turnFinger;
+  _animationTo = target;
+  _animationStart = CACurrentMediaTime();
+  _animationDuration = MAX(duration, 0.01);
+  _animationCompletes = completes;
+  _animation = [CADisplayLink displayLinkWithTarget:self selector:@selector(onAnimationTick:)];
+  [_animation addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)onAnimationTick:(CADisplayLink *)link
+{
+  CGFloat t = MIN(1, (CACurrentMediaTime() - _animationStart) / _animationDuration);
+  CGFloat eased = RNCPageCurlEaseOut(t);
+  CGPoint finger = CGPointMake(_animationFrom.x + (_animationTo.x - _animationFrom.x) * eased,
+                               _animationFrom.y + (_animationTo.y - _animationFrom.y) * eased);
+  [self applyFinger:finger];
+  if (t >= 1) {
+    BOOL completes = _animationCompletes;
+    [self stopAnimation];
+    [self finishTransitionCompleted:completes];
   }
 }
 
-- (void)pageViewController:(UIPageViewController *)pageViewController
-        didFinishAnimating:(BOOL)finished
-   previousViewControllers:(NSArray<UIViewController *> *)previousViewControllers
-       transitionCompleted:(BOOL)completed
+- (void)stopAnimation
 {
+  [_animation invalidate];
+  _animation = nil;
+}
+
+- (void)finishTransitionCompleted:(BOOL)completed
+{
+  NSString *direction = _turnDirection;
+  _turnDirection = nil;
   _transitionInFlight = NO;
-  [self resetCompletionSpeed];
-  NSString *shown = [self shownSlot];
-  NSLog(@"[page-curl] didFinishAnimating finished=%d completed=%d shown=%@", finished, completed, shown);
-  if (!completed || [shown isEqualToString:RNCPageCurlSlotCurrent]) {
+  _edgeEmitted = NO;
+  NSLog(@"[page-curl] turn %@ finished completed=%d", direction, completed);
+  if (!completed) {
+    [self showCover];
     [self hideIfIdle];
     [self emit:@"cancel" direction:nil detail:nil];
     if (_pendingSettle != nil) {
@@ -1233,8 +1375,10 @@ static UIColor *RNCPageCurlColorFromCSS(NSString *css)
     }
     return;
   }
-  [self emit:@"turn" direction:shown detail:[NSString stringWithFormat:@"from page %ld", (long)_page]];
-  [self finishTurnToward:shown];
+  [self emit:@"turn" direction:direction detail:[NSString stringWithFormat:@"from page %ld", (long)_page]];
+  [self rotateSlotsToward:direction];
+  [self showCover];
+  [self finishTurnToward:direction];
 }
 
 @end

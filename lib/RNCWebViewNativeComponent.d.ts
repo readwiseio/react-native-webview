@@ -1,4 +1,3 @@
-/// <reference types="react" />
 import type { HostComponent, ViewProps } from 'react-native';
 import { DirectEventHandler, Double, Int32, WithDefault } from 'react-native/Libraries/Types/CodegenTypes';
 export type WebViewNativeEvent = Readonly<{
@@ -197,6 +196,12 @@ export interface NativeProps extends ViewProps {
     pageCurlEnabled?: boolean;
     pageCurlSpine?: WithDefault<'edge' | 'middle', 'edge'>;
     pageCurlPaperColor?: string;
+    pageCurlBackColor?: string;
+    pageCurlShadowColor?: string;
+    pageCurlShadowOpacity?: WithDefault<Double, 0.35>;
+    pageCurlHighlightColor?: string;
+    pageCurlHighlightOpacity?: WithDefault<Double, 0.2>;
+    pageCurlTuning?: string;
     textInteractionEnabled?: WithDefault<boolean, true>;
     useSharedProcessPool?: WithDefault<boolean, true>;
     onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;

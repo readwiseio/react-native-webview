@@ -189,6 +189,13 @@ RCT_CUSTOM_VIEW_PROPERTY(pageCurlEnabled, BOOL, RNCWebViewImpl) {
   view.pageCurlEnabled = json == nil ? false : [RCTConvert BOOL: json];
 }
 RCT_EXPORT_VIEW_PROPERTY(pageCurlSpine, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlPaperColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlBackColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlShadowColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlShadowOpacity, NSNumber)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightOpacity, NSNumber)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlTuning, NSString)
 RCT_CUSTOM_VIEW_PROPERTY(dragInteractionEnabled, BOOL, RNCWebViewImpl) {
   view.dragInteractionEnabled = json == nil ? true : [RCTConvert BOOL: json];
 }

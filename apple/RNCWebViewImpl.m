@@ -835,6 +835,42 @@ RCTAutoInsetsProtocol>
   _pageCurl.paperColor = pageCurlPaperColor;
 }
 
+- (void)setPageCurlBackColor:(NSString *)pageCurlBackColor
+{
+  _pageCurlBackColor = [pageCurlBackColor copy];
+  _pageCurl.backColor = pageCurlBackColor;
+}
+
+- (void)setPageCurlShadowColor:(NSString *)pageCurlShadowColor
+{
+  _pageCurlShadowColor = [pageCurlShadowColor copy];
+  _pageCurl.shadowColor = pageCurlShadowColor;
+}
+
+- (void)setPageCurlShadowOpacity:(NSNumber *)pageCurlShadowOpacity
+{
+  _pageCurlShadowOpacity = pageCurlShadowOpacity;
+  _pageCurl.shadowOpacity = pageCurlShadowOpacity;
+}
+
+- (void)setPageCurlHighlightColor:(NSString *)pageCurlHighlightColor
+{
+  _pageCurlHighlightColor = [pageCurlHighlightColor copy];
+  _pageCurl.highlightColor = pageCurlHighlightColor;
+}
+
+- (void)setPageCurlHighlightOpacity:(NSNumber *)pageCurlHighlightOpacity
+{
+  _pageCurlHighlightOpacity = pageCurlHighlightOpacity;
+  _pageCurl.highlightOpacity = pageCurlHighlightOpacity;
+}
+
+- (void)setPageCurlTuning:(NSString *)pageCurlTuning
+{
+  _pageCurlTuning = [pageCurlTuning copy];
+  _pageCurl.tuning = pageCurlTuning;
+}
+
 - (void)setPageCurlSpine:(NSString *)pageCurlSpine
 {
   _pageCurlSpine = [pageCurlSpine copy];
@@ -852,6 +888,12 @@ RCTAutoInsetsProtocol>
     _pageCurl = [[RNCWebViewPageCurl alloc] initWithHostView:self webView:_webView];
     _pageCurl.spine = _pageCurlSpine;
     _pageCurl.paperColor = _pageCurlPaperColor;
+    _pageCurl.backColor = _pageCurlBackColor;
+    _pageCurl.shadowColor = _pageCurlShadowColor;
+    _pageCurl.shadowOpacity = _pageCurlShadowOpacity;
+    _pageCurl.highlightColor = _pageCurlHighlightColor;
+    _pageCurl.highlightOpacity = _pageCurlHighlightOpacity;
+    _pageCurl.tuning = _pageCurlTuning;
     __weak __typeof(self) weakSelf = self;
     _pageCurl.onEvent = ^(NSDictionary *event) {
       __strong __typeof(weakSelf) strongSelf = weakSelf;

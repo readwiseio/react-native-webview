@@ -728,11 +728,41 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      */
     pageCurlSpine?: 'edge' | 'middle';
     /**
-     * CSS color for the paper behind the baked pages and the back of a curling sheet, e.g.
-     * the reader's background. Hex (#rgb, #rrggbb, #rrggbbaa), rgb()/rgba(), white or black.
+     * CSS color for the paper behind the baked pages, e.g. the reader's background.
+     * Hex (#rgb, #rrggbb, #rrggbbaa), rgb()/rgba(), white or black. All curl colors take the
+     * same formats.
      * @platform ios
      */
     pageCurlPaperColor?: string;
+    /**
+     * Color of the back of a curling sheet. Defaults to the paper faded toward the opposite
+     * extreme (lighter on dark paper, darker on light paper).
+     * @platform ios
+     */
+    pageCurlBackColor?: string;
+    /**
+     * Color and strength (0..1) of the curl's shadows: the shading of the bend and the shadow
+     * it casts on the pages around it. Default black at 0.35.
+     * @platform ios
+     */
+    pageCurlShadowColor?: string;
+    pageCurlShadowOpacity?: number;
+    /**
+     * Color and strength (0..1) of the glossy band along the fold. Default white at 0.2; 0
+     * removes it.
+     * @platform ios
+     */
+    pageCurlHighlightColor?: string;
+    pageCurlHighlightOpacity?: number;
+    /**
+     * JSON object of tuning knobs for the curl's shape, shading and completion timing. Keys:
+     * radiusFraction, radiusMax, bendInDistance, castWidthFloor, castWidthPerRadius,
+     * castStrengthFloor, castSoftness, aheadNear, aheadFar, bendDarken, crestPosition,
+     * crestWidth, riseScale, completeFraction, flickVelocity, durationBase,
+     * durationPerRemaining, speedMin, speedMax. Missing keys keep their defaults.
+     * @platform ios
+     */
+    pageCurlTuning?: string;
 }
 export interface MacOSWebViewProps extends WebViewSharedProps {
     /**

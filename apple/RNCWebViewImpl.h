@@ -123,6 +123,12 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, assign) BOOL pageCurlEnabled;
 @property (nonatomic, copy) NSString * _Nullable pageCurlSpine;
 @property (nonatomic, copy) NSString * _Nullable pageCurlPaperColor;
+@property (nonatomic, copy) NSString * _Nullable pageCurlBackColor;
+@property (nonatomic, copy) NSString * _Nullable pageCurlShadowColor;
+@property (nonatomic, strong) NSNumber * _Nullable pageCurlShadowOpacity;
+@property (nonatomic, copy) NSString * _Nullable pageCurlHighlightColor;
+@property (nonatomic, strong) NSNumber * _Nullable pageCurlHighlightOpacity;
+@property (nonatomic, copy) NSString * _Nullable pageCurlTuning;
 #if !TARGET_OS_OSX
 @property (nonatomic, assign) WKDataDetectorTypes dataDetectorTypes;
 @property (nonatomic, weak) UIRefreshControl * _Nullable refreshControl;

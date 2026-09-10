@@ -348,6 +348,24 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     if (oldViewProps.pageCurlPaperColor != newViewProps.pageCurlPaperColor) {
         _view.pageCurlPaperColor = RCTNSStringFromString(newViewProps.pageCurlPaperColor);
     }
+    if (oldViewProps.pageCurlBackColor != newViewProps.pageCurlBackColor) {
+        _view.pageCurlBackColor = RCTNSStringFromString(newViewProps.pageCurlBackColor);
+    }
+    if (oldViewProps.pageCurlShadowColor != newViewProps.pageCurlShadowColor) {
+        _view.pageCurlShadowColor = RCTNSStringFromString(newViewProps.pageCurlShadowColor);
+    }
+    if (oldViewProps.pageCurlShadowOpacity != newViewProps.pageCurlShadowOpacity) {
+        _view.pageCurlShadowOpacity = @(newViewProps.pageCurlShadowOpacity);
+    }
+    if (oldViewProps.pageCurlHighlightColor != newViewProps.pageCurlHighlightColor) {
+        _view.pageCurlHighlightColor = RCTNSStringFromString(newViewProps.pageCurlHighlightColor);
+    }
+    if (oldViewProps.pageCurlHighlightOpacity != newViewProps.pageCurlHighlightOpacity) {
+        _view.pageCurlHighlightOpacity = @(newViewProps.pageCurlHighlightOpacity);
+    }
+    if (oldViewProps.pageCurlTuning != newViewProps.pageCurlTuning) {
+        _view.pageCurlTuning = RCTNSStringFromString(newViewProps.pageCurlTuning);
+    }
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)

@@ -7,11 +7,10 @@ typedef void (^RNCPageCurlEventBlock)(NSDictionary *event);
 
 /**
  * Apple Books-style page curl over a WKWebView. Pages are bitmaps baked with
- * takeSnapshot; a UIPageViewController (pageCurl style) hosts them above the
- * webview and is hidden at rest. The content frame reports settles through the
- * "pageCurl" script message handler; the controller drives the webview through
- * window.nativePageCurl. Events (logging only): touch, tap, turn, cancel, edge,
- * settled, ready.
+ * takeSnapshot; a Metal renderer draws them above the webview and is hidden at
+ * rest. The content frame reports settles through the "pageCurl" script message
+ * handler; the controller drives the webview through window.nativePageCurl.
+ * Events (logging only): touch, tap, turn, cancel, edge, settled, ready.
  */
 @interface RNCWebViewPageCurl : NSObject
 
@@ -21,9 +20,17 @@ typedef void (^RNCPageCurlEventBlock)(NSDictionary *event);
 // "edge" = one sheet with the spine at the left edge (default), "middle" = facing pages with
 // the spine in the center
 @property (nonatomic, copy, nullable) NSString *spine;
-// CSS color for the paper behind the bakes and the back of a curling sheet; when unset the
-// top-left pixel of the current bake is used
+// CSS colors; when the paper is unset the top-left pixel of the current bake is used, and the
+// back of a sheet defaults to the paper faded toward the opposite extreme
 @property (nonatomic, copy, nullable) NSString *paperColor;
+@property (nonatomic, copy, nullable) NSString *backColor;
+@property (nonatomic, copy, nullable) NSString *shadowColor;
+@property (nonatomic, strong, nullable) NSNumber *shadowOpacity;
+@property (nonatomic, copy, nullable) NSString *highlightColor;
+@property (nonatomic, strong, nullable) NSNumber *highlightOpacity;
+// JSON object of tuning knobs (radius, bend-in, shadow widths, completion timing); unknown keys
+// are ignored and missing keys keep their defaults, so knobs can be added without codegen
+@property (nonatomic, copy, nullable) NSString *tuning;
 
 - (void)setEnabled:(BOOL)enabled;
 - (void)handleMessage:(NSDictionary *)message;
