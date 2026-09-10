@@ -15,7 +15,6 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"bendInDistance": @30,
     @"settleGain": @2,
     @"tiltSoftness": @120,
-    @"grabMinFraction": @0.45,
     @"castWidthFloor": @0.5,
     @"castWidthPerRadius": @0.9,
     @"castStrengthFloor": @0.6,
@@ -1218,10 +1217,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   CGFloat height = _turnSheetRect.size.height;
   _turnRadiusMax = MIN([self tune:@"radiusMax"], width * [self tune:@"radiusFraction"]);
   _renderer.curlRadiusMax = _turnRadiusMax;
-  // the grabbed point stays under the finger, so the fold forms right next to it; a touch near the
-  // spine grabs further out instead, since a point 70 pt from the hinge flips fully in 140 pt of drag
-  CGFloat grabMin = width * MIN(MAX([self tune:@"grabMinFraction"], 0), 1);
-  _turnStart = CGPointMake(MIN(MAX([self localXFor:start.x], grabMin), width), MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
+  // the sheet is always grabbed at its outer edge on the touch's row, wherever the touch lands, and
+  // that edge moves exactly as far as the finger does
+  _turnStart = CGPointMake(width, MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
   _turnRest = _turnReversed ? [self turnedFinger] : _turnStart;
   _turnTouchDown = CGPointMake([self localXFor:start.x], start.y - _turnSheetRect.origin.y);
   _renderer.curlStart = _turnStart;
