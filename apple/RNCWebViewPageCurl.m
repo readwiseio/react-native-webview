@@ -777,24 +777,31 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 // commit once the manager recorded the resting page
 - (void)callBridge:(NSString *)fn page:(NSInteger)page completion:(void (^)(BOOL ok))completion
 {
+  [self callBridge:fn argument:@(page) completion:^(BOOL ok, id result) {
+    completion(ok);
+  }];
+}
+
+- (void)callBridge:(NSString *)fn argument:(id)argument completion:(void (^)(BOOL ok, id result))completion
+{
   WKWebView *webView = _webView;
   if (webView == nil) {
-    NSLog(@"[page-curl] bridge %@(%ld) failed: webview missing", fn, (long)page);
-    completion(NO);
+    NSLog(@"[page-curl] bridge %@(%@) failed: webview missing", fn, argument);
+    completion(NO, nil);
     return;
   }
   NSString *body = [NSString stringWithFormat:
       @"if (!window.nativePageCurl) { throw new Error('nativePageCurl bridge missing'); }"
-       "return await window.nativePageCurl.%@(page);", fn];
+       "return await window.nativePageCurl.%@(argument);", fn];
   CFTimeInterval start = CACurrentMediaTime();
   [webView callAsyncJavaScript:body
-                     arguments:@{@"page": @(page)}
+                     arguments:@{@"argument": argument ?: [NSNull null]}
                        inFrame:nil
                 inContentWorld:WKContentWorld.pageWorld
              completionHandler:^(id result, NSError *error) {
     double ms = (CACurrentMediaTime() - start) * 1000.0;
-    NSLog(@"[page-curl] bridge %@(%ld) took %.1fms error=%@", fn, (long)page, ms, error);
-    completion(error == nil);
+    NSLog(@"[page-curl] bridge %@(%@) took %.1fms result=%@ error=%@", fn, argument, ms, result, error);
+    completion(error == nil, result);
   }];
 }
 
@@ -866,8 +873,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   });
 }
 
-// the slot on the far side of the target page: bake it, curl onto blank paper for a page in
-// the neighboring chunk, or nothing at the ends of the book
+// the slot on the far side of the target page: bake it, bake the neighboring chunk's edge page
+// through the manager's own chunk switch (blank paper if that is refused), or nothing at the
+// ends of the book
 - (void)addNeighborStepsForPage:(NSInteger)page direction:(NSString *)direction to:(NSMutableArray<RNCPageCurlStep> *)steps
 {
   BOOL next = [direction isEqualToString:RNCPageCurlSlotNext];
@@ -880,13 +888,37 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   __weak __typeof(self) weakSelf = self;
-  [steps addObject:[self stepBlock:^{
-    if (beyondChunk) {
-      [weakSelf blankSlot:direction];
-    } else {
+  if (!beyondChunk) {
+    [steps addObject:[self stepBlock:^{
       [weakSelf clearSlot:direction];
-    }
-  }]];
+    }]];
+    return;
+  }
+  [steps addObject:^(void (^done)(BOOL)) {
+    [weakSelf callBridge:@"peek" argument:direction completion:^(BOOL ok, id result) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf == nil) {
+        return;
+      }
+      if (!ok || ![result isKindOfClass:[NSNumber class]] || ![result boolValue]) {
+        NSLog(@"[page-curl] peek %@ refused; curling onto blank paper", direction);
+        [strongSelf blankSlot:direction];
+        done(YES);
+        return;
+      }
+      [strongSelf snapshotIntoSlot:direction completion:^(BOOL snapped) {
+        if (!snapped) {
+          [weakSelf blankSlot:direction];
+        }
+        done(YES);
+      }];
+    }];
+  }];
+  [steps addObject:^(void (^done)(BOOL)) {
+    [weakSelf callBridge:@"unpeek" argument:nil completion:^(BOOL ok, id result) {
+      done(ok);
+    }];
+  }];
 }
 
 - (void)finishCycle:(BOOL)ok reason:(NSString *)reason
@@ -1026,8 +1058,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   if ([type isEqualToString:@"chunkFade"]) {
     // the manager has hidden the old chunk and will fade the new one in; after a turn onto blank
-    // paper the cover is dropped so that fade shows, and the rebake after the settle covers again
-    if (_awaitingSettle && !_cycleRunning && !_transitionInFlight) {
+    // paper the cover is dropped so that fade shows, and the rebake after the settle covers again.
+    // A turn onto the real edge page keeps its cover: the rebake will match it pixel for pixel.
+    if (_awaitingSettle && !_cycleRunning && !_transitionInFlight && [self slot:RNCPageCurlSlotCurrent].texture == nil) {
       NSLog(@"[page-curl] chunk fade: uncovering the webview");
       _coverHeld = NO;
       _renderer.hidden = YES;
