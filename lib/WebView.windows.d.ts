@@ -9,5 +9,9 @@
  * Copyright (c) Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License.
  */
-declare const WebView: any;
+import React from 'react';
+import { WindowsWebViewProps } from './WebViewTypes';
+declare const WebView: React.ForwardRefExoticComponent<WindowsWebViewProps & React.RefAttributes<{}>> & {
+    isFileUploadSupported: () => Promise<boolean>;
+};
 export default WebView;

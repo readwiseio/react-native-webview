@@ -1,26 +1,26 @@
-/// <reference types="react" />
+import React from 'react';
 import { OnShouldStartLoadWithRequest, ShouldStartLoadRequestEvent, WebViewError, WebViewErrorEvent, WebViewHttpErrorEvent, WebViewMessageEvent, WebViewNavigation, WebViewNavigationEvent, WebViewOpenWindowEvent, WebViewProgressEvent, WebViewRenderProcessGoneEvent, WebViewTerminatedEvent } from './WebViewTypes';
 declare const defaultOriginWhitelist: readonly ["http://*", "https://*"];
 declare const createOnShouldStartLoadWithRequest: (loadRequest: (shouldStart: boolean, url: string, lockIdentifier: number) => void, originWhitelist: readonly string[], onShouldStartLoadWithRequest?: OnShouldStartLoadWithRequest) => ({ nativeEvent }: ShouldStartLoadRequestEvent) => void;
-declare const defaultRenderLoading: () => any;
-declare const defaultRenderError: (errorDomain: string | undefined, errorCode: number, errorDesc: string) => any;
+declare const defaultRenderLoading: () => React.JSX.Element;
+declare const defaultRenderError: (errorDomain: string | undefined, errorCode: number, errorDesc: string) => React.JSX.Element;
 export { defaultOriginWhitelist, createOnShouldStartLoadWithRequest, defaultRenderLoading, defaultRenderError, };
 export declare const useWebViewLogic: ({ startInLoadingState, onNavigationStateChange, onLoadStart, onLoad, onLoadProgress, onLoadEnd, onError, onLoadSubResourceError, onHttpErrorProp, onMessageProp, onOpenWindowProp, onRenderProcessGoneProp, onContentProcessDidTerminateProp, originWhitelist, onShouldStartLoadWithRequestProp, onShouldStartLoadWithRequestCallback, }: {
-    startInLoadingState?: boolean;
-    onNavigationStateChange?: (event: WebViewNavigation) => void;
-    onLoadStart?: (event: WebViewNavigationEvent) => void;
-    onLoad?: (event: WebViewNavigationEvent) => void;
-    onLoadProgress?: (event: WebViewProgressEvent) => void;
-    onLoadEnd?: (event: WebViewNavigationEvent | WebViewErrorEvent) => void;
-    onError?: (event: WebViewErrorEvent) => void;
-    onLoadSubResourceError?: (event: WebViewErrorEvent) => void;
-    onHttpErrorProp?: (event: WebViewHttpErrorEvent) => void;
-    onMessageProp?: (event: WebViewMessageEvent) => void;
-    onOpenWindowProp?: (event: WebViewOpenWindowEvent) => void;
-    onRenderProcessGoneProp?: (event: WebViewRenderProcessGoneEvent) => void;
-    onContentProcessDidTerminateProp?: (event: WebViewTerminatedEvent) => void;
+    startInLoadingState?: boolean | undefined;
+    onNavigationStateChange?: ((event: WebViewNavigation) => void) | undefined;
+    onLoadStart?: ((event: WebViewNavigationEvent) => void) | undefined;
+    onLoad?: ((event: WebViewNavigationEvent) => void) | undefined;
+    onLoadProgress?: ((event: WebViewProgressEvent) => void) | undefined;
+    onLoadEnd?: ((event: WebViewNavigationEvent | WebViewErrorEvent) => void) | undefined;
+    onError?: ((event: WebViewErrorEvent) => void) | undefined;
+    onLoadSubResourceError?: ((event: WebViewErrorEvent) => void) | undefined;
+    onHttpErrorProp?: ((event: WebViewHttpErrorEvent) => void) | undefined;
+    onMessageProp?: ((event: WebViewMessageEvent) => void) | undefined;
+    onOpenWindowProp?: ((event: WebViewOpenWindowEvent) => void) | undefined;
+    onRenderProcessGoneProp?: ((event: WebViewRenderProcessGoneEvent) => void) | undefined;
+    onContentProcessDidTerminateProp?: ((event: WebViewTerminatedEvent) => void) | undefined;
     originWhitelist: readonly string[];
-    onShouldStartLoadWithRequestProp?: OnShouldStartLoadWithRequest;
+    onShouldStartLoadWithRequestProp?: OnShouldStartLoadWithRequest | undefined;
     onShouldStartLoadWithRequestCallback: (shouldStart: boolean, url: string, lockIdentifier?: number | undefined) => void;
 }) => {
     onShouldStartLoadWithRequest: ({ nativeEvent }: ShouldStartLoadRequestEvent) => void;
@@ -35,6 +35,6 @@ export declare const useWebViewLogic: ({ startInLoadingState, onNavigationStateC
     onMessage: (event: WebViewMessageEvent) => void;
     onOpenWindow: (event: WebViewOpenWindowEvent) => void;
     viewState: "IDLE" | "LOADING" | "ERROR";
-    setViewState: import("react").Dispatch<import("react").SetStateAction<"IDLE" | "LOADING" | "ERROR">>;
-    lastErrorEvent: WebViewError;
+    setViewState: React.Dispatch<React.SetStateAction<"IDLE" | "LOADING" | "ERROR">>;
+    lastErrorEvent: WebViewError | null;
 };
