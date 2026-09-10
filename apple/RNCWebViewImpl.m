@@ -7,6 +7,9 @@
 
 #import "RNCWebViewImpl.h"
 #import "RNCAssetSchemeHandler.h"
+#if !TARGET_OS_OSX
+#import "RNCWebViewPageCurl.h"
+#endif
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
@@ -21,6 +24,7 @@
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
+static NSString *const PageCurlMessageHandlerName = @"pageCurl";
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
 
@@ -146,6 +150,9 @@ RCTAutoInsetsProtocol>
   UIStatusBarStyle _savedStatusBarStyle;
 #endif // !TARGET_OS_OSX
   BOOL _savedStatusBarHidden;
+#if !TARGET_OS_OSX
+  RNCWebViewPageCurl *_pageCurl;
+#endif // !TARGET_OS_OSX
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000 /* __IPHONE_11_0 */
   UIScrollViewContentInsetAdjustmentBehavior _savedContentInsetAdjustmentBehavior;
@@ -493,6 +500,8 @@ RCTAutoInsetsProtocol>
   // Shim the HTML5 history API:
   [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
                                                             name:HistoryShimName];
+  [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
+                                                            name:PageCurlMessageHandlerName];
   [self resetupScripts:wkWebViewConfig];
 
   if(@available(macos 10.11, ios 9.0, *)) {
@@ -581,6 +590,11 @@ RCTAutoInsetsProtocol>
 #endif
 
     [self addSubview:_webView];
+#if !TARGET_OS_OSX
+    if (_pageCurlEnabled) {
+      [self pageCurlSetEnabled:YES];
+    }
+#endif
     [self setHideKeyboardAccessoryView: _savedHideKeyboardAccessoryView];
     [self setKeyboardDisplayRequiresUserAction: _savedKeyboardDisplayRequiresUserAction];
     [self visitSource];
@@ -625,6 +639,7 @@ RCTAutoInsetsProtocol>
   if (_webView) {
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:PageCurlMessageHandlerName];
     [_webView removeObserver:self forKeyPath:@"estimatedProgress"];
     [_webView removeFromSuperview];
     if (@available(iOS 15.0, macOS 12.0, *)) {
@@ -638,6 +653,8 @@ RCTAutoInsetsProtocol>
       UIMenuController *menuController = [UIMenuController sharedMenuController];
       menuController.menuItems = nil;
     }
+    [_pageCurl teardown];
+    _pageCurl = nil;
 #endif // !TARGET_OS_OSX
     _webView = nil;
     if (_onContentProcessDidTerminate) {
@@ -755,6 +772,103 @@ RCTAutoInsetsProtocol>
 }
 
 #if !TARGET_OS_OSX
+- (void)takeSnapshotWithRequestId:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates
+{
+  if (_webView == nil) {
+    [self emitSnapshot:requestId path:nil image:nil captureMs:0 encodeMs:0 error:@"webview not created"];
+    return;
+  }
+  WKSnapshotConfiguration *config = [WKSnapshotConfiguration new];
+  config.afterScreenUpdates = afterScreenUpdates;
+  CFTimeInterval start = CACurrentMediaTime();
+  __weak __typeof(self) weakSelf = self;
+  [_webView takeSnapshotWithConfiguration:config completionHandler:^(UIImage *image, NSError *error) {
+    double captureMs = (CACurrentMediaTime() - start) * 1000.0;
+    if (error != nil || image == nil) {
+      [weakSelf emitSnapshot:requestId path:nil image:nil captureMs:captureMs encodeMs:0
+                       error:error.localizedDescription ?: @"snapshot returned no image"];
+      return;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      CFTimeInterval encodeStart = CACurrentMediaTime();
+      NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"rnc-webview-snapshot-%ld.png", (long)requestId]];
+      BOOL written = [UIImagePNGRepresentation(image) writeToFile:path atomically:YES];
+      double encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf emitSnapshot:requestId path:written ? path : nil image:written ? image : nil
+                     captureMs:captureMs encodeMs:encodeMs error:written ? nil : @"could not write snapshot"];
+      });
+    });
+  }];
+}
+
+- (void)emitSnapshot:(NSInteger)requestId path:(NSString *)path image:(UIImage *)image
+           captureMs:(double)captureMs encodeMs:(double)encodeMs error:(NSString *)error
+{
+  NSLog(@"[snapshot-spike] request=%ld capture=%.1fms encode=%.1fms size=%.0fx%.0f@%.0fx error=%@ path=%@",
+        (long)requestId, captureMs, encodeMs, image.size.width, image.size.height, image.scale, error ?: @"none", path ?: @"");
+  if (!self.onSnapshot) {
+    return;
+  }
+  self.onSnapshot(@{
+    @"requestId": @(requestId),
+    @"uri": path ? [[NSURL fileURLWithPath:path] absoluteString] : @"",
+    @"width": @(image ? image.size.width * image.scale : 0),
+    @"height": @(image ? image.size.height * image.scale : 0),
+    @"scale": @(image ? image.scale : 0),
+    @"captureMs": @(captureMs),
+    @"encodeMs": @(encodeMs),
+    @"error": error ?: @"",
+  });
+}
+
+- (void)setPageCurlEnabled:(BOOL)pageCurlEnabled
+{
+  _pageCurlEnabled = pageCurlEnabled;
+  [self pageCurlSetEnabled:pageCurlEnabled];
+}
+
+- (void)setPageCurlPaperColor:(NSString *)pageCurlPaperColor
+{
+  _pageCurlPaperColor = [pageCurlPaperColor copy];
+  _pageCurl.paperColor = pageCurlPaperColor;
+}
+
+- (void)setPageCurlSpine:(NSString *)pageCurlSpine
+{
+  _pageCurlSpine = [pageCurlSpine copy];
+  _pageCurl.spine = pageCurlSpine;
+}
+
+- (void)pageCurlSetEnabled:(BOOL)enabled
+{
+  NSLog(@"[page-curl] impl pageCurlSetEnabled=%d webView=%@ existing=%@", enabled, _webView, _pageCurl);
+  if (enabled && _pageCurl == nil) {
+    if (_webView == nil) {
+      NSLog(@"[page-curl] impl: no webview yet, will enable once it exists");
+      return;
+    }
+    _pageCurl = [[RNCWebViewPageCurl alloc] initWithHostView:self webView:_webView];
+    _pageCurl.spine = _pageCurlSpine;
+    _pageCurl.paperColor = _pageCurlPaperColor;
+    __weak __typeof(self) weakSelf = self;
+    _pageCurl.onEvent = ^(NSDictionary *event) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf != nil && strongSelf.onPageCurl) {
+        strongSelf.onPageCurl(event);
+      }
+    };
+  }
+  [_pageCurl setEnabled:enabled];
+  if (!enabled) {
+    _pageCurl = nil;
+  }
+}
+
+#endif
+
+#if !TARGET_OS_OSX
 - (void)setContentInsetAdjustmentBehavior:(UIScrollViewContentInsetAdjustmentBehavior)behavior
 {
   _savedContentInsetAdjustmentBehavior = behavior;
@@ -802,6 +916,14 @@ RCTAutoInsetsProtocol>
       [event addEntriesFromDictionary: @{@"url": message.frameInfo.request.URL.absoluteString}];
       _onMessage(event);
     }
+  } else if ([message.name isEqualToString:PageCurlMessageHandlerName]) {
+#if !TARGET_OS_OSX
+    if ([message.body isKindOfClass:[NSDictionary class]]) {
+      [_pageCurl handleMessage:message.body];
+    } else {
+      NSLog(@"[page-curl] impl ignored a non-dictionary message: %@", message.body);
+    }
+#endif
   }
 }
 
@@ -1157,6 +1279,9 @@ RCTAutoInsetsProtocol>
 
   // Ensure webview takes the position and dimensions of RNCWebViewImpl
   _webView.frame = self.bounds;
+#if !TARGET_OS_OSX
+  [_pageCurl layoutWithBounds:self.bounds];
+#endif
 #if !TARGET_OS_OSX
   _webView.scrollView.contentInset = _contentInset;
 #endif // !TARGET_OS_OSX

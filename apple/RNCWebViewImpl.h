@@ -118,6 +118,11 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 // Android-only event; declared here as a no-op so the shared codegen interface
 // stays consistent across platforms. Never fired on iOS/macOS.
 @property (nonatomic, copy) RCTDirectEventBlock onNativeTouchEnd;
+@property (nonatomic, copy) RCTDirectEventBlock onSnapshot;
+@property (nonatomic, copy) RCTDirectEventBlock onPageCurl;
+@property (nonatomic, assign) BOOL pageCurlEnabled;
+@property (nonatomic, copy) NSString * _Nullable pageCurlSpine;
+@property (nonatomic, copy) NSString * _Nullable pageCurlPaperColor;
 #if !TARGET_OS_OSX
 @property (nonatomic, assign) WKDataDetectorTypes dataDetectorTypes;
 @property (nonatomic, weak) UIRefreshControl * _Nullable refreshControl;
@@ -157,6 +162,10 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 - (void)requestFocus;
 - (void)clearCache:(BOOL)includeDiskFiles;
 - (void)setTintColor:(UIColor *)tintColor;
+#if !TARGET_OS_OSX
+- (void)takeSnapshotWithRequestId:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates;
+- (void)pageCurlSetEnabled:(BOOL)enabled;
+#endif
 #ifdef RCT_NEW_ARCH_ENABLED
 - (void)destroyWebView;
 #endif

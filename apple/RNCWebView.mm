@@ -196,6 +196,33 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
                 webViewEventEmitter->onCustomMenuSelection(data);
             }
         };
+        _view.onSnapshot = [self](NSDictionary* dictionary) {
+            if (_eventEmitter) {
+                auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
+                facebook::react::RNCWebViewEventEmitter::OnSnapshot data = {
+                    .requestId = [[dictionary valueForKey:@"requestId"] intValue],
+                    .uri = std::string([[dictionary valueForKey:@"uri"] UTF8String]),
+                    .width = [[dictionary valueForKey:@"width"] doubleValue],
+                    .height = [[dictionary valueForKey:@"height"] doubleValue],
+                    .scale = [[dictionary valueForKey:@"scale"] doubleValue],
+                    .captureMs = [[dictionary valueForKey:@"captureMs"] doubleValue],
+                    .encodeMs = [[dictionary valueForKey:@"encodeMs"] doubleValue],
+                    .error = std::string([[dictionary valueForKey:@"error"] UTF8String])
+                };
+                webViewEventEmitter->onSnapshot(data);
+            }
+        };
+        _view.onPageCurl = [self](NSDictionary* dictionary) {
+            if (_eventEmitter) {
+                auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
+                facebook::react::RNCWebViewEventEmitter::OnPageCurl data = {
+                    .type = std::string([[dictionary valueForKey:@"type"] UTF8String]),
+                    .direction = std::string([[dictionary valueForKey:@"direction"] UTF8String]),
+                    .detail = std::string([[dictionary valueForKey:@"detail"] UTF8String])
+                };
+                webViewEventEmitter->onPageCurl(data);
+            }
+        };
         _view.onScroll = [self](NSDictionary* dictionary) {
             if (_eventEmitter) {
                 NSDictionary* contentOffset = [dictionary valueForKey:@"contentOffset"];
@@ -314,6 +341,13 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     REMAP_WEBVIEW_PROP(keyboardDisplayRequiresUserAction)
     REMAP_WEBVIEW_PROP(scrollsToTop)
     REMAP_WEBVIEW_PROP(dragInteractionEnabled)
+    REMAP_WEBVIEW_PROP(pageCurlEnabled)
+    if (oldViewProps.pageCurlSpine != newViewProps.pageCurlSpine) {
+        _view.pageCurlSpine = RCTNSStringFromString(toString(newViewProps.pageCurlSpine));
+    }
+    if (oldViewProps.pageCurlPaperColor != newViewProps.pageCurlPaperColor) {
+        _view.pageCurlPaperColor = RCTNSStringFromString(newViewProps.pageCurlPaperColor);
+    }
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)
@@ -566,6 +600,14 @@ Class<RCTComponentViewProtocol> RNCWebViewCls(void)
                                       blue:blue / 255.0
                                      alpha:alpha];
     [_view setTintColor:color];
+}
+
+- (void)takeSnapshot:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates {
+    [_view takeSnapshotWithRequestId:requestId afterScreenUpdates:afterScreenUpdates];
+}
+
+- (void)pageCurlSetEnabled:(BOOL)enabled {
+    [_view pageCurlSetEnabled:enabled];
 }
 
 @end

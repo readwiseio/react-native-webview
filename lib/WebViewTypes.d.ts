@@ -108,6 +108,29 @@ export interface WebViewNativeTouchEnd {
     x: number;
     y: number;
 }
+export interface WebViewSnapshot {
+    requestId: number;
+    /**
+     * file:// URL of the PNG written to the temp directory; empty on error.
+     */
+    uri: string;
+    /**
+     * Image size in pixels.
+     */
+    width: number;
+    height: number;
+    scale: number;
+    captureMs: number;
+    encodeMs: number;
+    error: string;
+}
+export type WebViewSnapshotResult = Omit<WebViewSnapshot, 'requestId' | 'error'>;
+export type WebViewSnapshotOptions = {
+    /**
+     * Wait for pending web content updates to render before capturing. Default true.
+     */
+    afterScreenUpdates?: boolean;
+};
 export type WebViewEvent = NativeSyntheticEvent<WebViewNativeEvent>;
 export type WebViewProgressEvent = NativeSyntheticEvent<WebViewNativeProgressEvent>;
 export type WebViewNavigationEvent = NativeSyntheticEvent<WebViewNavigation>;
@@ -120,6 +143,13 @@ export type WebViewHttpErrorEvent = NativeSyntheticEvent<WebViewHttpError>;
 export type WebViewRenderProcessGoneEvent = NativeSyntheticEvent<WebViewRenderProcessGoneDetail>;
 export type WebViewOpenWindowEvent = NativeSyntheticEvent<WebViewOpenWindow>;
 export type WebViewNativeTouchEndEvent = NativeSyntheticEvent<WebViewNativeTouchEnd>;
+export type WebViewSnapshotEvent = NativeSyntheticEvent<WebViewSnapshot>;
+export interface WebViewPageCurl {
+    type: 'touch' | 'tap' | 'turn' | 'cancel' | 'edge' | 'settled' | 'ready';
+    direction: 'next' | 'previous' | '';
+    detail: string;
+}
+export type WebViewPageCurlEvent = NativeSyntheticEvent<WebViewPageCurl>;
 export type WebViewScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
 export type DataDetectorTypes = 'phoneNumber' | 'link' | 'address' | 'calendarEvent' | 'trackingNumber' | 'flightNumber' | 'lookupSuggestion' | 'none' | 'all';
 export type OverScrollModeType = 'always' | 'content' | 'never';
@@ -222,6 +252,8 @@ export interface CommonNativeWebViewProps extends ViewProps {
     onMessage: (event: WebViewMessageEvent) => void;
     onShouldStartLoadWithRequest: (event: ShouldStartLoadRequestEvent) => void;
     onNativeTouchEnd?: (event: WebViewNativeTouchEndEvent) => void;
+    onSnapshot?: (event: WebViewSnapshotEvent) => void;
+    onPageCurl?: (event: WebViewPageCurlEvent) => void;
     showsHorizontalScrollIndicator?: boolean;
     showsVerticalScrollIndicator?: boolean;
     paymentRequestEnabled?: boolean;
@@ -294,6 +326,16 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      * Does not store any data within the lifetime of the WebView.
      */
     incognito?: boolean;
+    /**
+     * Fires with the result of every `takeSnapshot()` call, after the promise settles.
+     * @platform ios
+     */
+    onSnapshot?: (event: WebViewSnapshotEvent) => void;
+    /**
+     * Page-curl host events: turn, cancel, edge (baked is consumed internally).
+     * @platform ios
+     */
+    onPageCurl?: (event: WebViewPageCurlEvent) => void;
     /**
      * Boolean value that determines whether the web view bounces
      * when it reaches the edge of the content. The default value is `true`.
@@ -673,6 +715,24 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      * @platform ios
      */
     dragInteractionEnabled?: boolean;
+    /**
+     * Hosts a page-curl controller over the webview; page turns are driven natively and
+     * reported through `onPageCurl`.
+     * @platform ios
+     */
+    pageCurlEnabled?: boolean;
+    /**
+     * Where the curl hinges: `edge` curls the whole view as one sheet from the left edge
+     * (default), `middle` splits it into facing pages with the spine in the center.
+     * @platform ios
+     */
+    pageCurlSpine?: 'edge' | 'middle';
+    /**
+     * CSS color for the paper behind the baked pages and the back of a curling sheet, e.g.
+     * the reader's background. Hex (#rgb, #rrggbb, #rrggbbaa), rgb()/rgba(), white or black.
+     * @platform ios
+     */
+    pageCurlPaperColor?: string;
 }
 export interface MacOSWebViewProps extends WebViewSharedProps {
     /**

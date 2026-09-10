@@ -1,6 +1,2 @@
-import React from 'react';
-import { MacOSWebViewProps } from './WebViewTypes';
-declare const WebView: React.ForwardRefExoticComponent<MacOSWebViewProps & React.RefAttributes<{}>> & {
-    isFileUploadSupported: () => Promise<boolean>;
-};
+declare const WebView: any;
 export default WebView;

@@ -39,6 +39,21 @@ export type WebViewNativeTouchEndEvent = Readonly<{
   x: Double;
   y: Double;
 }>;
+export type WebViewSnapshotEvent = Readonly<{
+  requestId: Int32;
+  uri: string;
+  width: Double;
+  height: Double;
+  scale: Double;
+  captureMs: Double;
+  encodeMs: Double;
+  error: string;
+}>;
+export type WebViewPageCurlEvent = Readonly<{
+  type: string;
+  direction: string;
+  detail: string;
+}>;
 export type WebViewHttpErrorEvent = Readonly<{
   url: string;
   loading: boolean;
@@ -247,10 +262,17 @@ export interface NativeProps extends ViewProps {
   scrollsToTop?: WithDefault<boolean, true>;
   sharedCookiesEnabled?: boolean;
   dragInteractionEnabled?: WithDefault<boolean, true>;
+  // iOS only (Readwise custom): Books-style page curl host over the webview
+  pageCurlEnabled?: boolean;
+  pageCurlSpine?: WithDefault<'edge' | 'middle', 'edge'>;
+  pageCurlPaperColor?: string;
   textInteractionEnabled?: WithDefault<boolean, true>;
   useSharedProcessPool?: WithDefault<boolean, true>;
   onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;
   onCustomMenuSelection?: DirectEventHandler<WebViewCustomMenuSelectionEvent>;
+  // iOS only (Readwise custom): result of the takeSnapshot command
+  onSnapshot?: DirectEventHandler<WebViewSnapshotEvent>;
+  onPageCurl?: DirectEventHandler<WebViewPageCurlEvent>;
   onFileDownload?: DirectEventHandler<WebViewDownloadEvent>;
 
   menuItems?: ReadonlyArray<Readonly<{ label: string; key: string }>>;
@@ -346,6 +368,15 @@ export interface NativeCommands {
     blue: Double,
     alpha: Double
   ) => void;
+  takeSnapshot: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    requestId: Int32,
+    afterScreenUpdates: boolean
+  ) => void;
+  pageCurlSetEnabled: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    enabled: boolean
+  ) => void;
 }
 
 export const Commands = codegenNativeCommands<NativeCommands>({
@@ -362,6 +393,8 @@ export const Commands = codegenNativeCommands<NativeCommands>({
     'clearCache',
     'clearHistory',
     'setTintColor',
+    'takeSnapshot',
+    'pageCurlSetEnabled',
   ],
 });
 
