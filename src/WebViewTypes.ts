@@ -36,7 +36,9 @@ interface RNCWebViewUIManager<Commands extends string> extends UIManagerStatic {
 export type RNCWebViewUIManagerAndroid = RNCWebViewUIManager<
   WebViewCommands | AndroidWebViewCommands
 >;
-export type RNCWebViewUIManagerIOS = RNCWebViewUIManager<WebViewCommands | IOSWebViewCommands>;
+export type RNCWebViewUIManagerIOS = RNCWebViewUIManager<
+  WebViewCommands | IOSWebViewCommands
+>;
 export type RNCWebViewUIManagerMacOS = RNCWebViewUIManager<WebViewCommands>;
 export type RNCWebViewUIManagerWindows = RNCWebViewUIManager<WebViewCommands>;
 

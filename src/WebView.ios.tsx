@@ -87,7 +87,6 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
       incognito,
       decelerationRate: decelerationRateProp,
       onShouldStartLoadWithRequest: onShouldStartLoadWithRequestProp,
-      onPageCurl: onPageCurlProp,
       pageCurlTuning,
       ...otherProps
     },
@@ -161,7 +160,12 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
         clearCache: (includeDiskFiles: boolean) =>
           webViewRef.current &&
           Commands.clearCache(webViewRef.current, includeDiskFiles),
-        setTintColor: (red: number, green: number, blue: number, alpha: number) =>
+        setTintColor: (
+          red: number,
+          green: number,
+          blue: number,
+          alpha: number
+        ) =>
           webViewRef.current &&
           Commands.setTintColor(webViewRef.current, red, green, blue, alpha),
       }),
@@ -255,7 +259,6 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
         onOpenWindow={onOpenWindowProp && onOpenWindow}
         hasOnOpenWindowEvent={onOpenWindowProp !== undefined}
         onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
-        onPageCurl={onPageCurlProp}
         pageCurlTuning={pageCurlTuning && JSON.stringify(pageCurlTuning)}
         onContentProcessDidTerminate={onContentProcessDidTerminate}
         injectedJavaScript={injectedJavaScript}
