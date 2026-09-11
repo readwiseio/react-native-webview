@@ -7,6 +7,9 @@
 
 #import "RNCWebViewImpl.h"
 #import "RNCAssetSchemeHandler.h"
+#if !TARGET_OS_OSX
+#import "RNCWebViewPageCurl.h"
+#endif
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
@@ -21,6 +24,7 @@
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
+static NSString *const PageCurlMessageHandlerName = @"pageCurl";
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
 
@@ -146,6 +150,9 @@ RCTAutoInsetsProtocol>
   UIStatusBarStyle _savedStatusBarStyle;
 #endif // !TARGET_OS_OSX
   BOOL _savedStatusBarHidden;
+#if !TARGET_OS_OSX
+  RNCWebViewPageCurl *_pageCurl;
+#endif // !TARGET_OS_OSX
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000 /* __IPHONE_11_0 */
   UIScrollViewContentInsetAdjustmentBehavior _savedContentInsetAdjustmentBehavior;
@@ -581,6 +588,11 @@ RCTAutoInsetsProtocol>
 #endif
 
     [self addSubview:_webView];
+#if !TARGET_OS_OSX
+    if (_pageCurlEnabled) {
+      [self pageCurlSetEnabled:YES];
+    }
+#endif
     [self setHideKeyboardAccessoryView: _savedHideKeyboardAccessoryView];
     [self setKeyboardDisplayRequiresUserAction: _savedKeyboardDisplayRequiresUserAction];
     [self visitSource];
@@ -638,6 +650,9 @@ RCTAutoInsetsProtocol>
       UIMenuController *menuController = [UIMenuController sharedMenuController];
       menuController.menuItems = nil;
     }
+    // this host may be recycled for an unrelated webview; the curl comes back only if its props ask
+    [self pageCurlSetEnabled:NO];
+    _pageCurlEnabled = NO;
 #endif // !TARGET_OS_OSX
     _webView = nil;
     if (_onContentProcessDidTerminate) {
@@ -755,6 +770,111 @@ RCTAutoInsetsProtocol>
 }
 
 #if !TARGET_OS_OSX
+- (void)setPageCurlEnabled:(BOOL)pageCurlEnabled
+{
+  BOOL changed = pageCurlEnabled != _pageCurlEnabled;
+  _pageCurlEnabled = pageCurlEnabled;
+  if (changed) {
+    [self pageCurlSetEnabled:pageCurlEnabled];
+  }
+}
+
+- (void)setPageCurlPaperColor:(UIColor *)pageCurlPaperColor
+{
+  _pageCurlPaperColor = pageCurlPaperColor;
+  _pageCurl.paperColor = pageCurlPaperColor;
+}
+
+- (void)setPageCurlBackColor:(UIColor *)pageCurlBackColor
+{
+  _pageCurlBackColor = pageCurlBackColor;
+  _pageCurl.backColor = pageCurlBackColor;
+}
+
+- (void)setPageCurlShadowColor:(UIColor *)pageCurlShadowColor
+{
+  _pageCurlShadowColor = pageCurlShadowColor;
+  _pageCurl.shadowColor = pageCurlShadowColor;
+}
+
+- (void)setPageCurlShadowOpacity:(NSNumber *)pageCurlShadowOpacity
+{
+  _pageCurlShadowOpacity = pageCurlShadowOpacity;
+  _pageCurl.shadowOpacity = pageCurlShadowOpacity;
+}
+
+- (void)setPageCurlHighlightColor:(UIColor *)pageCurlHighlightColor
+{
+  _pageCurlHighlightColor = pageCurlHighlightColor;
+  _pageCurl.highlightColor = pageCurlHighlightColor;
+}
+
+- (void)setPageCurlHighlightOpacity:(NSNumber *)pageCurlHighlightOpacity
+{
+  _pageCurlHighlightOpacity = pageCurlHighlightOpacity;
+  _pageCurl.highlightOpacity = pageCurlHighlightOpacity;
+}
+
+- (void)setPageCurlTuning:(NSString *)pageCurlTuning
+{
+  _pageCurlTuning = [pageCurlTuning copy];
+  _pageCurl.tuning = pageCurlTuning;
+}
+
+- (void)setPageCurlDebugLogging:(BOOL)pageCurlDebugLogging
+{
+  _pageCurlDebugLogging = pageCurlDebugLogging;
+  RNCPageCurlLoggingEnabled = pageCurlDebugLogging;
+}
+
+- (void)setPageCurlSpine:(NSString *)pageCurlSpine
+{
+  _pageCurlSpine = [pageCurlSpine copy];
+  _pageCurl.spine = pageCurlSpine;
+}
+
+// the one path that creates or destroys the curl controller, driven by the pageCurlEnabled prop
+- (void)pageCurlSetEnabled:(BOOL)enabled
+{
+  if (!enabled && _pageCurl == nil) {
+    return;
+  }
+  RNCPageCurlLog(@"[page-curl] impl pageCurlSetEnabled=%d webView=%@ existing=%@", enabled, _webView, _pageCurl);
+  if (enabled && _pageCurl == nil) {
+    if (_webView == nil) {
+      RNCPageCurlLog(@"[page-curl] impl: no webview yet, will enable once it exists");
+      return;
+    }
+    // the content frame's message handler exists only while a curl controller does
+    [_webView.configuration.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
+                                                                     name:PageCurlMessageHandlerName];
+    _pageCurl = [[RNCWebViewPageCurl alloc] initWithHostView:self webView:_webView];
+    _pageCurl.spine = _pageCurlSpine;
+    _pageCurl.paperColor = _pageCurlPaperColor;
+    _pageCurl.backColor = _pageCurlBackColor;
+    _pageCurl.shadowColor = _pageCurlShadowColor;
+    _pageCurl.shadowOpacity = _pageCurlShadowOpacity;
+    _pageCurl.highlightColor = _pageCurlHighlightColor;
+    _pageCurl.highlightOpacity = _pageCurlHighlightOpacity;
+    _pageCurl.tuning = _pageCurlTuning;
+    __weak __typeof(self) weakSelf = self;
+    _pageCurl.onEvent = ^(NSDictionary *event) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf != nil && strongSelf.onPageCurl) {
+        strongSelf.onPageCurl(event);
+      }
+    };
+  }
+  [_pageCurl setEnabled:enabled];
+  if (!enabled) {
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:PageCurlMessageHandlerName];
+    _pageCurl = nil;
+  }
+}
+
+#endif
+
+#if !TARGET_OS_OSX
 - (void)setContentInsetAdjustmentBehavior:(UIScrollViewContentInsetAdjustmentBehavior)behavior
 {
   _savedContentInsetAdjustmentBehavior = behavior;
@@ -802,6 +922,14 @@ RCTAutoInsetsProtocol>
       [event addEntriesFromDictionary: @{@"url": message.frameInfo.request.URL.absoluteString}];
       _onMessage(event);
     }
+  } else if ([message.name isEqualToString:PageCurlMessageHandlerName]) {
+#if !TARGET_OS_OSX
+    if ([message.body isKindOfClass:[NSDictionary class]]) {
+      [_pageCurl handleMessage:message.body];
+    } else {
+      RNCPageCurlLog(@"[page-curl] impl ignored a non-dictionary message: %@", message.body);
+    }
+#endif
   }
 }
 
@@ -1157,6 +1285,9 @@ RCTAutoInsetsProtocol>
 
   // Ensure webview takes the position and dimensions of RNCWebViewImpl
   _webView.frame = self.bounds;
+#if !TARGET_OS_OSX
+  [_pageCurl layoutWithBounds:self.bounds];
+#endif
 #if !TARGET_OS_OSX
   _webView.scrollView.contentInset = _contentInset;
 #endif // !TARGET_OS_OSX

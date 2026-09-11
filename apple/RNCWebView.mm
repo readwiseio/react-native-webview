@@ -8,6 +8,7 @@
 #import <react/renderer/components/RNCWebViewSpec/Props.h>
 #import <react/renderer/components/RNCWebViewSpec/RCTComponentViewHelpers.h>
 
+#import <React/RCTConversions.h>
 #import <React/RCTFabricComponentsPlugins.h>
 
 using namespace facebook::react;
@@ -196,6 +197,17 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
                 webViewEventEmitter->onCustomMenuSelection(data);
             }
         };
+        _view.onPageCurl = [self](NSDictionary* dictionary) {
+            if (_eventEmitter) {
+                auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
+                facebook::react::RNCWebViewEventEmitter::OnPageCurl data = {
+                    .type = std::string([[dictionary valueForKey:@"type"] UTF8String]),
+                    .direction = std::string([[dictionary valueForKey:@"direction"] UTF8String]),
+                    .detail = std::string([[dictionary valueForKey:@"detail"] UTF8String])
+                };
+                webViewEventEmitter->onPageCurl(data);
+            }
+        };
         _view.onScroll = [self](NSDictionary* dictionary) {
             if (_eventEmitter) {
                 NSDictionary* contentOffset = [dictionary valueForKey:@"contentOffset"];
@@ -269,6 +281,11 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
         _view.name = RCTNSStringFromString(newViewProps.name);      \
     }
 
+#define REMAP_WEBVIEW_COLOR_PROP(name)                              \
+    if (oldViewProps.name != newViewProps.name) {                   \
+        _view.name = RCTUIColorFromSharedColor(newViewProps.name);  \
+    }
+
     REMAP_WEBVIEW_PROP(scrollEnabled)
     REMAP_WEBVIEW_STRING_PROP(injectedJavaScript)
     REMAP_WEBVIEW_STRING_PROP(injectedJavaScriptBeforeContentLoaded)
@@ -314,6 +331,24 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     REMAP_WEBVIEW_PROP(keyboardDisplayRequiresUserAction)
     REMAP_WEBVIEW_PROP(scrollsToTop)
     REMAP_WEBVIEW_PROP(dragInteractionEnabled)
+    // set every time: the host resets its flag when its webview is destroyed, and a recycled
+    // component view keeps the previous element's props so the remap would skip it
+    _view.pageCurlEnabled = newViewProps.pageCurlEnabled;
+    if (oldViewProps.pageCurlSpine != newViewProps.pageCurlSpine) {
+        _view.pageCurlSpine = RCTNSStringFromString(toString(newViewProps.pageCurlSpine));
+    }
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlPaperColor)
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlBackColor)
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlShadowColor)
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlHighlightColor)
+    if (oldViewProps.pageCurlShadowOpacity != newViewProps.pageCurlShadowOpacity) {
+        _view.pageCurlShadowOpacity = @(newViewProps.pageCurlShadowOpacity);
+    }
+    if (oldViewProps.pageCurlHighlightOpacity != newViewProps.pageCurlHighlightOpacity) {
+        _view.pageCurlHighlightOpacity = @(newViewProps.pageCurlHighlightOpacity);
+    }
+    REMAP_WEBVIEW_STRING_PROP(pageCurlTuning)
+    _view.pageCurlDebugLogging = newViewProps.pageCurlDebugLogging;
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)

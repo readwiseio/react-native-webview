@@ -1,4 +1,4 @@
-import type { HostComponent, ViewProps } from 'react-native';
+import type { ColorValue, HostComponent, ViewProps } from 'react-native';
 import { DirectEventHandler, Double, Int32, WithDefault } from 'react-native/Libraries/Types/CodegenTypes';
 export type WebViewNativeEvent = Readonly<{
     url: string;
@@ -30,6 +30,11 @@ export type WebViewNativeTouchEndEvent = Readonly<{
     pointerCount: Int32;
     x: Double;
     y: Double;
+}>;
+export type WebViewPageCurlEvent = Readonly<{
+    type: string;
+    direction: string;
+    detail: string;
 }>;
 export type WebViewHttpErrorEvent = Readonly<{
     url: string;
@@ -178,10 +183,21 @@ export interface NativeProps extends ViewProps {
     scrollsToTop?: WithDefault<boolean, true>;
     sharedCookiesEnabled?: boolean;
     dragInteractionEnabled?: WithDefault<boolean, true>;
+    pageCurlEnabled?: boolean;
+    pageCurlSpine?: WithDefault<'edge' | 'middle', 'edge'>;
+    pageCurlPaperColor?: ColorValue;
+    pageCurlBackColor?: ColorValue;
+    pageCurlShadowColor?: ColorValue;
+    pageCurlShadowOpacity?: WithDefault<Double, 0.35>;
+    pageCurlHighlightColor?: ColorValue;
+    pageCurlHighlightOpacity?: WithDefault<Double, 0.2>;
+    pageCurlTuning?: string;
+    pageCurlDebugLogging?: boolean;
     textInteractionEnabled?: WithDefault<boolean, true>;
     useSharedProcessPool?: WithDefault<boolean, true>;
     onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;
     onCustomMenuSelection?: DirectEventHandler<WebViewCustomMenuSelectionEvent>;
+    onPageCurl?: DirectEventHandler<WebViewPageCurlEvent>;
     onFileDownload?: DirectEventHandler<WebViewDownloadEvent>;
     menuItems?: ReadonlyArray<Readonly<{
         label: string;
