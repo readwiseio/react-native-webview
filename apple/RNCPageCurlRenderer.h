@@ -1,14 +1,8 @@
 #import <MetalKit/MetalKit.h>
 #import <UIKit/UIKit.h>
+#import "RNCPageCurlLog.h"
 
 NS_ASSUME_NONNULL_BEGIN
-
-// per-frame logging (every draw and finger move) is for tuning on a dev build only
-#if DEBUG
-#define RNCPageCurlFrameLog(...) NSLog(__VA_ARGS__)
-#else
-#define RNCPageCurlFrameLog(...)
-#endif
 
 // a page bitmap placed in the view; texture nil draws paper; texRect selects part of the texture
 @interface RNCPageCurlPage : NSObject

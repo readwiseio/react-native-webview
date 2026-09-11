@@ -274,7 +274,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     NSError *error = nil;
     id<MTLLibrary> library = [device newLibraryWithSource:[NSString stringWithUTF8String:RNCPageCurlShaderSource] options:[MTLCompileOptions new] error:&error];
     if (library == nil) {
-      NSLog(@"[page-curl] metal: shader compile failed: %@", error);
+      RNCPageCurlLog(@"[page-curl] metal: shader compile failed: %@", error);
       return;
     }
     MTLRenderPipelineDescriptor *sheet = [MTLRenderPipelineDescriptor new];
@@ -284,7 +284,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     sheet.depthAttachmentPixelFormat = RNCPageCurlDepthFormat;
     pipelines.sheet = [device newRenderPipelineStateWithDescriptor:sheet error:&error];
     if (pipelines.sheet == nil) {
-      NSLog(@"[page-curl] metal: sheet pipeline failed: %@", error);
+      RNCPageCurlLog(@"[page-curl] metal: sheet pipeline failed: %@", error);
       return;
     }
     MTLRenderPipelineDescriptor *under = [MTLRenderPipelineDescriptor new];
@@ -294,7 +294,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     under.depthAttachmentPixelFormat = RNCPageCurlDepthFormat;
     pipelines.under = [device newRenderPipelineStateWithDescriptor:under error:&error];
     if (pipelines.under == nil) {
-      NSLog(@"[page-curl] metal: under pipeline failed: %@", error);
+      RNCPageCurlLog(@"[page-curl] metal: under pipeline failed: %@", error);
       return;
     }
     MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
@@ -308,7 +308,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     sampler.sAddressMode = MTLSamplerAddressModeClampToEdge;
     sampler.tAddressMode = MTLSamplerAddressModeClampToEdge;
     pipelines.sampler = [device newSamplerStateWithDescriptor:sampler];
-    NSLog(@"[page-curl] metal: pipelines ready in %.1fms on %@", (CACurrentMediaTime() - start) * 1000.0, device.name);
+    RNCPageCurlLog(@"[page-curl] metal: pipelines ready in %.1fms on %@", (CACurrentMediaTime() - start) * 1000.0, device.name);
   });
   return pipelines;
 }
@@ -401,7 +401,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
   CGColorSpaceRelease(colorSpace);
   if (context == nil) {
     free(bytes);
-    NSLog(@"[page-curl] metal: bitmap context failed for %zux%zu", width, height);
+    RNCPageCurlLog(@"[page-curl] metal: bitmap context failed for %zux%zu", width, height);
     return nil;
   }
   CGContextDrawImage(context, CGRectMake(0, 0, width, height), cg);
@@ -415,7 +415,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
   id<MTLTexture> texture = [self.device newTextureWithDescriptor:descriptor];
   [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:bytes bytesPerRow:bytesPerRow];
   free(bytes);
-  NSLog(@"[page-curl] metal: texture %zux%zu in %.1fms", width, height, (CACurrentMediaTime() - start) * 1000.0);
+  RNCPageCurlLog(@"[page-curl] metal: texture %zux%zu in %.1fms", width, height, (CACurrentMediaTime() - start) * 1000.0);
   return texture;
 }
 
@@ -475,13 +475,13 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     return;
   }
   RNCPageCurlUniforms base = [self baseUniforms];
-  RNCPageCurlFrameLog(@"[page-curl] draw S=%.0f,%.0f F=%.0f,%.0f R=%.1f axis=%.0f,%.0f n=%.2f,%.2f sheet=%@ mirrored=%d curling=%d under=%lu",
+  RNCPageCurlLog(@"[page-curl] draw S=%.0f,%.0f F=%.0f,%.0f R=%.1f axis=%.0f,%.0f n=%.2f,%.2f sheet=%@ mirrored=%d curling=%d under=%lu",
                       _curlStart.x, _curlStart.y, _curlFinger.x, _curlFinger.y, base.radius, base.axisOrigin.x, base.axisOrigin.y, base.axisNormal.x,
                       base.axisNormal.y, NSStringFromCGRect(_sheet.rect), _mirrored, _curling, (unsigned long)_underPages.count);
   id<CAMetalDrawable> drawable = self.currentDrawable;
   MTLRenderPassDescriptor *pass = self.currentRenderPassDescriptor;
   if (drawable == nil || pass == nil) {
-    NSLog(@"[page-curl] metal: no drawable (hidden=%d)", self.hidden);
+    RNCPageCurlLog(@"[page-curl] metal: no drawable (hidden=%d)", self.hidden);
     return;
   }
   CGFloat r = 1, g = 1, b = 1, a = 1;

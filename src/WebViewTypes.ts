@@ -911,6 +911,13 @@ export interface IOSWebViewProps extends WebViewSharedProps {
    * @platform ios
    */
   pageCurlTuning?: Record<string, number>;
+
+  /**
+   * Logs every step of the curl (bakes, gestures, frames) to the console. Off by default;
+   * meant for development builds only.
+   * @platform ios
+   */
+  pageCurlDebugLogging?: boolean;
 }
 
 export interface MacOSWebViewProps extends WebViewSharedProps {

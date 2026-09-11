@@ -348,6 +348,7 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
         _view.pageCurlHighlightOpacity = @(newViewProps.pageCurlHighlightOpacity);
     }
     REMAP_WEBVIEW_STRING_PROP(pageCurlTuning)
+    _view.pageCurlDebugLogging = newViewProps.pageCurlDebugLogging;
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)

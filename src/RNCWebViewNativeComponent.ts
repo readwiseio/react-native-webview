@@ -262,6 +262,7 @@ export interface NativeProps extends ViewProps {
   pageCurlHighlightColor?: ColorValue;
   pageCurlHighlightOpacity?: WithDefault<Double, 0.2>;
   pageCurlTuning?: string;
+  pageCurlDebugLogging?: boolean;
   textInteractionEnabled?: WithDefault<boolean, true>;
   useSharedProcessPool?: WithDefault<boolean, true>;
   onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;

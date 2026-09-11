@@ -468,6 +468,9 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
 
     @Override
     public void setPageCurlTuning(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void setPageCurlDebugLogging(RNCWebViewWrapper view, boolean value) {}
     /* !iOS PROPS - no implemented here */
 
     @Override

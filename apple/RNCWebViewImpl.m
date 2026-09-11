@@ -821,6 +821,12 @@ RCTAutoInsetsProtocol>
   _pageCurl.tuning = pageCurlTuning;
 }
 
+- (void)setPageCurlDebugLogging:(BOOL)pageCurlDebugLogging
+{
+  _pageCurlDebugLogging = pageCurlDebugLogging;
+  RNCPageCurlLoggingEnabled = pageCurlDebugLogging;
+}
+
 - (void)setPageCurlSpine:(NSString *)pageCurlSpine
 {
   _pageCurlSpine = [pageCurlSpine copy];
@@ -833,10 +839,10 @@ RCTAutoInsetsProtocol>
   if (!enabled && _pageCurl == nil) {
     return;
   }
-  NSLog(@"[page-curl] impl pageCurlSetEnabled=%d webView=%@ existing=%@", enabled, _webView, _pageCurl);
+  RNCPageCurlLog(@"[page-curl] impl pageCurlSetEnabled=%d webView=%@ existing=%@", enabled, _webView, _pageCurl);
   if (enabled && _pageCurl == nil) {
     if (_webView == nil) {
-      NSLog(@"[page-curl] impl: no webview yet, will enable once it exists");
+      RNCPageCurlLog(@"[page-curl] impl: no webview yet, will enable once it exists");
       return;
     }
     // the content frame's message handler exists only while a curl controller does
@@ -921,7 +927,7 @@ RCTAutoInsetsProtocol>
     if ([message.body isKindOfClass:[NSDictionary class]]) {
       [_pageCurl handleMessage:message.body];
     } else {
-      NSLog(@"[page-curl] impl ignored a non-dictionary message: %@", message.body);
+      RNCPageCurlLog(@"[page-curl] impl ignored a non-dictionary message: %@", message.body);
     }
 #endif
   }

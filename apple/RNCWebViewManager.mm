@@ -195,6 +195,9 @@ RCT_EXPORT_VIEW_PROPERTY(pageCurlShadowOpacity, NSNumber)
 RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightColor, UIColor)
 RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightOpacity, NSNumber)
 RCT_EXPORT_VIEW_PROPERTY(pageCurlTuning, NSString)
+RCT_CUSTOM_VIEW_PROPERTY(pageCurlDebugLogging, BOOL, RNCWebViewImpl) {
+  view.pageCurlDebugLogging = json == nil ? false : [RCTConvert BOOL: json];
+}
 RCT_CUSTOM_VIEW_PROPERTY(dragInteractionEnabled, BOOL, RNCWebViewImpl) {
   view.dragInteractionEnabled = json == nil ? true : [RCTConvert BOOL: json];
 }
