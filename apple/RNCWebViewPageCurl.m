@@ -29,8 +29,8 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"aheadStrength": @1.0,
     @"tightFade": @0.7,
     @"backShowThrough": @0.15,
-    @"completeFraction": @0.5,
-    @"flickVelocity": @300,
+    @"completeDistance": @40,
+    @"flickVelocity": @400,
     @"durationBase": @0.18,
     @"durationPerRemaining": @0.32,
     @"speedMin": @0.45,
@@ -116,6 +116,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 @property (nonatomic, copy) void (^onTouchesEnded)(void);
 @property (nonatomic, copy) void (^onHeldStill)(void);
 @property (nonatomic, assign) CGPoint startPoint;
+@property (nonatomic, assign) CFTimeInterval startTime;
 @property (nonatomic, assign) BOOL moved;
 @property (nonatomic, assign) NSUInteger touchSequence;
 @end
@@ -126,6 +127,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   [super touchesBegan:touches withEvent:event];
   self.startPoint = [touches.anyObject locationInView:self.view];
+  self.startTime = CACurrentMediaTime();
   self.moved = NO;
   self.touchSequence += 1;
   NSUInteger sequence = self.touchSequence;
@@ -236,6 +238,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   // the touch-down in sheet-local coordinates; the finger is tracked relative to it, since the grab
   // point may have been moved out from the spine
   CGPoint _turnTouchDown;
+  // how far the finger has moved in the turn's direction since touch-down
+  CGFloat _turnDrag;
   CGFloat _turnRadiusMax;
   // a single-sheet turn back starts folded over and flattens out
   BOOL _turnReversed;
@@ -1220,6 +1224,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _turnStart = CGPointMake(width, MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
   _turnRest = _turnReversed ? [self turnedFinger] : _turnStart;
   _turnTouchDown = CGPointMake([self localXFor:start.x], start.y - _turnSheetRect.origin.y);
+  _turnDrag = 0;
   _renderer.curlStart = _turnStart;
   NSLog(@"[page-curl] turn %@ begins at %@ grab=%@ sheet=%@ mirrored=%d reversed=%d radiusMax=%.0f", direction, NSStringFromCGPoint(start),
         NSStringFromCGPoint(_turnStart), NSStringFromCGRect(_turnSheetRect), _renderer.mirrored, _turnReversed, _turnRadiusMax);
@@ -1247,6 +1252,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (void)moveTurnTo:(CGPoint)location
 {
   CGPoint local = CGPointMake([self localXFor:location.x], location.y - _turnSheetRect.origin.y);
+  _turnDrag = _turnReversed ? local.x - _turnTouchDown.x : _turnTouchDown.x - local.x;
   CGPoint finger = CGPointMake(_turnRest.x + local.x - _turnTouchDown.x, _turnRest.y + local.y - _turnTouchDown.y);
   finger.x = MIN(MAX(finger.x, [self turnedFinger].x), _turnStart.x);
   finger.y = MIN(MAX(finger.y, 0), _turnSheetRect.size.height);
@@ -1341,8 +1347,12 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL next = [_turnDirection isEqualToString:RNCPageCurlSlotNext];
   CGFloat toward = next ? -velocity.x : velocity.x;
   CGFloat progress = [self turnProgress];
-  // a drag past completeFraction of the turn, or a flick faster than flickVelocity, completes it
-  BOOL completes = fabs(velocity.x) > [self tune:@"flickVelocity"] ? toward > 0 : progress > [self tune:@"completeFraction"];
+  // the content frame's own swipe rule: a drag past completeDistance, or one whose average speed over
+  // the touch beats flickVelocity, turns the page, unless the finger was moving back when it lifted
+  CGFloat elapsed = MAX(CACurrentMediaTime() - _touchObserver.startTime, 0.001);
+  CGFloat average = _turnDrag / elapsed;
+  BOOL movingBack = toward < -50;
+  BOOL completes = !movingBack && (_turnDrag > [self tune:@"completeDistance"] || average > [self tune:@"flickVelocity"]);
   CGFloat speedMin = [self tune:@"speedMin"];
   CGFloat speed = MIN([self tune:@"speedMax"], MAX(speedMin, speedMin + fabs(velocity.x) / 3000.0));
   CGFloat remaining = completes ? 1 - progress : progress;
@@ -1350,7 +1360,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   CGPoint flat = _turnStart;
   CGPoint turned = [self turnedFinger];
   BOOL endsTurned = completes != _turnReversed;
-  NSLog(@"[page-curl] release velocity=%.0f progress=%.2f -> %@ in %.0fms", velocity.x, progress, completes ? @"complete" : @"cancel", duration * 1000);
+  NSLog(@"[page-curl] release velocity=%.0f drag=%.0f over %.0fms average=%.0f progress=%.2f -> %@ in %.0fms", velocity.x, _turnDrag,
+        elapsed * 1000, average, progress, completes ? @"complete" : @"cancel", duration * 1000);
   [self animateFingerTo:endsTurned ? turned : flat duration:duration completes:completes];
 }
 

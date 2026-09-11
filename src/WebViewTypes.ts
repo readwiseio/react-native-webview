@@ -943,7 +943,7 @@ export interface IOSWebViewProps extends WebViewSharedProps {
    * JSON object of tuning knobs for the curl's shape, shading and completion timing. Keys:
    * radiusFraction, radiusMax, bendInDistance, castWidthFloor, castWidthPerRadius,
    * castStrengthFloor, castSoftness, aheadNear, aheadFar, bendDarken, crestPosition,
-   * crestWidth, riseScale, completeFraction, flickVelocity, durationBase,
+   * crestWidth, riseScale, completeDistance, flickVelocity, durationBase,
    * durationPerRemaining, speedMin, speedMax. Missing keys keep their defaults.
    * @platform ios
    */

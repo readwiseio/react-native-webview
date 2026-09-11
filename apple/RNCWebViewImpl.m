@@ -500,8 +500,6 @@ RCTAutoInsetsProtocol>
   // Shim the HTML5 history API:
   [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
                                                             name:HistoryShimName];
-  [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
-                                                            name:PageCurlMessageHandlerName];
   [self resetupScripts:wkWebViewConfig];
 
   if(@available(macos 10.11, ios 9.0, *)) {
@@ -639,7 +637,6 @@ RCTAutoInsetsProtocol>
   if (_webView) {
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
-    [_webView.configuration.userContentController removeScriptMessageHandlerForName:PageCurlMessageHandlerName];
     [_webView removeObserver:self forKeyPath:@"estimatedProgress"];
     [_webView removeFromSuperview];
     if (@available(iOS 15.0, macOS 12.0, *)) {
@@ -653,8 +650,9 @@ RCTAutoInsetsProtocol>
       UIMenuController *menuController = [UIMenuController sharedMenuController];
       menuController.menuItems = nil;
     }
-    [_pageCurl teardown];
-    _pageCurl = nil;
+    // this host may be recycled for an unrelated webview; the curl comes back only if its props ask
+    [self pageCurlSetEnabled:NO];
+    _pageCurlEnabled = NO;
 #endif // !TARGET_OS_OSX
     _webView = nil;
     if (_onContentProcessDidTerminate) {
@@ -825,8 +823,11 @@ RCTAutoInsetsProtocol>
 
 - (void)setPageCurlEnabled:(BOOL)pageCurlEnabled
 {
+  BOOL changed = pageCurlEnabled != _pageCurlEnabled;
   _pageCurlEnabled = pageCurlEnabled;
-  [self pageCurlSetEnabled:pageCurlEnabled];
+  if (changed) {
+    [self pageCurlSetEnabled:pageCurlEnabled];
+  }
 }
 
 - (void)setPageCurlPaperColor:(NSString *)pageCurlPaperColor
@@ -879,12 +880,18 @@ RCTAutoInsetsProtocol>
 
 - (void)pageCurlSetEnabled:(BOOL)enabled
 {
+  if (!enabled && _pageCurl == nil) {
+    return;
+  }
   NSLog(@"[page-curl] impl pageCurlSetEnabled=%d webView=%@ existing=%@", enabled, _webView, _pageCurl);
   if (enabled && _pageCurl == nil) {
     if (_webView == nil) {
       NSLog(@"[page-curl] impl: no webview yet, will enable once it exists");
       return;
     }
+    // the content frame's message handler exists only while a curl controller does
+    [_webView.configuration.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
+                                                                     name:PageCurlMessageHandlerName];
     _pageCurl = [[RNCWebViewPageCurl alloc] initWithHostView:self webView:_webView];
     _pageCurl.spine = _pageCurlSpine;
     _pageCurl.paperColor = _pageCurlPaperColor;
@@ -904,6 +911,7 @@ RCTAutoInsetsProtocol>
   }
   [_pageCurl setEnabled:enabled];
   if (!enabled) {
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:PageCurlMessageHandlerName];
     _pageCurl = nil;
   }
 }

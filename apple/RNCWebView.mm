@@ -341,7 +341,9 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     REMAP_WEBVIEW_PROP(keyboardDisplayRequiresUserAction)
     REMAP_WEBVIEW_PROP(scrollsToTop)
     REMAP_WEBVIEW_PROP(dragInteractionEnabled)
-    REMAP_WEBVIEW_PROP(pageCurlEnabled)
+    // set every time: the host resets its flag when its webview is destroyed, and a recycled
+    // component view keeps the previous element's props so the remap would skip it
+    _view.pageCurlEnabled = newViewProps.pageCurlEnabled;
     if (oldViewProps.pageCurlSpine != newViewProps.pageCurlSpine) {
         _view.pageCurlSpine = RCTNSStringFromString(toString(newViewProps.pageCurlSpine));
     }
