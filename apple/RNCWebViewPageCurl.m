@@ -954,6 +954,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
+  // the webview may not be resting on the settled page: a cycle that this settle interrupted
+  // parks it on its own page, and a relayout can move it
+  [steps addObject:[self stepBridge:@"jump" page:_page]];
   [steps addObject:[self stepSnapshot:RNCPageCurlSlotCurrent]];
   [steps addObject:[self stepBlock:^{
     __strong __typeof(weakSelf) strongSelf = weakSelf;
