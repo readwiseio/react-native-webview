@@ -214,6 +214,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL _ready;
   // a bake cycle is moving the webview under the renderer
   BOOL _cycleRunning;
+  // bumped by every new cycle and by teardown; a cycle that finds it changed stops at its next step
+  NSUInteger _cycleGeneration;
   // the renderer must stay visible: a cycle is running, or a turn crossed the chunk edge
   // and the settle that follows will rebake
   BOOL _coverHeld;
@@ -569,6 +571,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   NSLog(@"[page-curl] teardown");
   _enabled = NO;
+  _cycleGeneration += 1;
   [self stopAnimation];
   if (_pan != nil) {
     [_pan.view removeGestureRecognizer:_pan];
@@ -753,6 +756,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   WKSnapshotConfiguration *config = [WKSnapshotConfiguration new];
   config.afterScreenUpdates = YES;
   CFTimeInterval start = CACurrentMediaTime();
+  NSUInteger generation = _cycleGeneration;
   __weak __typeof(self) weakSelf = self;
   [webView takeSnapshotWithConfiguration:config completionHandler:^(UIImage *image, NSError *error) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -761,6 +765,11 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     }
     double ms = (CACurrentMediaTime() - start) * 1000.0;
     NSLog(@"[page-curl] snapshot slot=%@ took %.1fms image=%@ error=%@", slot, ms, NSStringFromCGSize(image.size), error);
+    if (generation != strongSelf->_cycleGeneration) {
+      NSLog(@"[page-curl] snapshot slot=%@ dropped: its cycle was abandoned", slot);
+      completion(NO);
+      return;
+    }
     if (error != nil || image == nil) {
       completion(NO);
       return;
@@ -821,11 +830,17 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (RNCPageCurlStep)stepSnapshot:(NSString *)slot
 {
   __weak __typeof(self) weakSelf = self;
+  NSUInteger generation = _cycleGeneration;
   return ^(void (^done)(BOOL)) {
     [weakSelf snapshotIntoSlot:slot completion:^(BOOL ok) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf == nil || generation != strongSelf->_cycleGeneration) {
+        done(NO);
+        return;
+      }
       // a failed neighbor bake curls onto blank paper; a failed current bake has no cover to show
       if (!ok && ![slot isEqualToString:RNCPageCurlSlotCurrent]) {
-        [weakSelf blankSlot:slot];
+        [strongSelf blankSlot:slot];
         done(YES);
         return;
       }
@@ -850,10 +865,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   };
 }
 
-- (void)runSteps:(NSArray<RNCPageCurlStep> *)steps index:(NSUInteger)index completion:(void (^)(BOOL ok))completion
+// a cycle whose generation is no longer current has been superseded by a newer settle or a teardown;
+// it stops without reporting, the newer cycle owns every slot from here
+- (void)runSteps:(NSArray<RNCPageCurlStep> *)steps index:(NSUInteger)index generation:(NSUInteger)generation completion:(void (^)(BOOL ok))completion
 {
-  if (!_enabled) {
-    NSLog(@"[page-curl] cycle dropped at step %lu: disabled", (unsigned long)index);
+  if (!_enabled || generation != _cycleGeneration) {
+    NSLog(@"[page-curl] cycle %lu abandoned at step %lu (enabled=%d current=%lu)", (unsigned long)generation, (unsigned long)index, _enabled,
+          (unsigned long)_cycleGeneration);
     return;
   }
   if (index >= steps.count) {
@@ -866,11 +884,15 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     if (strongSelf == nil) {
       return;
     }
+    if (generation != strongSelf->_cycleGeneration) {
+      NSLog(@"[page-curl] cycle %lu abandoned after step %lu", (unsigned long)generation, (unsigned long)index);
+      return;
+    }
     if (!ok) {
       completion(NO);
       return;
     }
-    [strongSelf runSteps:steps index:index + 1 completion:completion];
+    [strongSelf runSteps:steps index:index + 1 generation:generation completion:completion];
   });
 }
 
@@ -895,6 +917,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     }]];
     return;
   }
+  // peek, snapshot and unpeek are one step: an abandoned cycle must never leave the manager peeked
+  NSUInteger generation = _cycleGeneration;
   [steps addObject:^(void (^done)(BOOL)) {
     [weakSelf callBridge:@"peek" argument:direction completion:^(BOOL ok, id result) {
       __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -908,16 +932,14 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
         return;
       }
       [strongSelf snapshotIntoSlot:direction completion:^(BOOL snapped) {
-        if (!snapped) {
-          [weakSelf blankSlot:direction];
+        __strong __typeof(weakSelf) innerSelf = weakSelf;
+        if (!snapped && innerSelf != nil && generation == innerSelf->_cycleGeneration) {
+          [innerSelf blankSlot:direction];
         }
-        done(YES);
+        [weakSelf callBridge:@"unpeek" argument:nil completion:^(BOOL unpeeked, id unpeekResult) {
+          done(unpeeked);
+        }];
       }];
-    }];
-  }];
-  [steps addObject:^(void (^done)(BOOL)) {
-    [weakSelf callBridge:@"unpeek" argument:nil completion:^(BOOL ok, id result) {
-      done(ok);
     }];
   }];
 }
@@ -949,8 +971,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _awaitingSettle = NO;
   _lockedByTap = NO;
   _ready = NO;
+  NSUInteger generation = ++_cycleGeneration;
   CFTimeInterval start = CACurrentMediaTime();
-  NSLog(@"[page-curl] full cycle start page=%ld/%ld chunk=%ld last=%d", (long)_page, (long)_totalPages, (long)_chunkIndex, _isLastChunk);
+  NSLog(@"[page-curl] full cycle %lu start page=%ld/%ld chunk=%ld last=%d", (unsigned long)generation, (long)_page, (long)_totalPages, (long)_chunkIndex,
+        _isLastChunk);
 
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
@@ -969,12 +993,12 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if (moved) {
     [steps addObject:[self stepBridge:@"jump" page:_page]];
   }
-  [self runSteps:steps index:0 completion:^(BOOL ok) {
+  [self runSteps:steps index:0 generation:generation completion:^(BOOL ok) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
     if (strongSelf == nil) {
       return;
     }
-    NSLog(@"[page-curl] full cycle %@ in %.1fms", ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
+    NSLog(@"[page-curl] full cycle %lu %@ in %.1fms", (unsigned long)generation, ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
     if (ok) {
       [strongSelf setManagerReady];
     }
@@ -1006,20 +1030,21 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _page = target;
   _cycleRunning = YES;
   _coverHeld = YES;
+  NSUInteger generation = ++_cycleGeneration;
   CFTimeInterval start = CACurrentMediaTime();
-  NSLog(@"[page-curl] turn cycle start page=%ld/%ld", (long)_page, (long)_totalPages);
+  NSLog(@"[page-curl] turn cycle %lu start page=%ld/%ld", (unsigned long)generation, (long)_page, (long)_totalPages);
 
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
   [self addNeighborStepsForPage:_page direction:direction to:steps];
   [steps addObject:[self stepBridge:@"jump" page:_page]];
   [steps addObject:[self stepBridge:@"commit" page:_page]];
   __weak __typeof(self) weakSelf = self;
-  [self runSteps:steps index:0 completion:^(BOOL ok) {
+  [self runSteps:steps index:0 generation:generation completion:^(BOOL ok) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
     if (strongSelf == nil) {
       return;
     }
-    NSLog(@"[page-curl] turn cycle %@ in %.1fms", ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
+    NSLog(@"[page-curl] turn cycle %lu %@ in %.1fms", (unsigned long)generation, ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
     [strongSelf finishCycle:ok reason:@"turn cycle"];
   }];
 }
@@ -1046,10 +1071,14 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if ([type isEqualToString:@"settled"]) {
     [self emit:@"settled" direction:nil detail:[NSString stringWithFormat:@"page %@/%@ chunk %@", message[@"page"], message[@"totalPages"], message[@"chunkIndex"]]];
     _ready = NO;
-    if (_cycleRunning || _transitionInFlight || [self panActive]) {
-      NSLog(@"[page-curl] settle deferred: busy");
+    if (_transitionInFlight || [self panActive]) {
+      NSLog(@"[page-curl] settle deferred: a turn is in flight");
       _pendingSettle = message;
       return;
+    }
+    if (_cycleRunning) {
+      // the running cycle bakes a page the manager has moved away from; the new settle takes over
+      NSLog(@"[page-curl] settle supersedes the running cycle");
     }
     [self runFullCycleWithSettle:message];
     return;
