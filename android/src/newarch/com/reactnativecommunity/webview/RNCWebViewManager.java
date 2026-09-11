@@ -441,6 +441,39 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
 
     @Override
     public void setPreventUniversalLinks(RNCWebViewWrapper view, @Nullable ReadableArray value) {}
+
+    @Override
+    public void setPageCurlEnabled(RNCWebViewWrapper view, boolean value) {}
+
+    @Override
+    public void setPageCurlSpine(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void setPageCurlPaperColor(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void setPageCurlBackColor(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void setPageCurlShadowColor(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void setPageCurlShadowOpacity(RNCWebViewWrapper view, double value) {}
+
+    @Override
+    public void setPageCurlHighlightColor(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void setPageCurlHighlightOpacity(RNCWebViewWrapper view, double value) {}
+
+    @Override
+    public void setPageCurlTuning(RNCWebViewWrapper view, @Nullable String value) {}
+
+    @Override
+    public void takeSnapshot(RNCWebViewWrapper view, int requestId, boolean afterScreenUpdates) {}
+
+    @Override
+    public void pageCurlSetEnabled(RNCWebViewWrapper view, boolean enabled) {}
     /* !iOS PROPS - no implemented here */
 
     @Override
