@@ -32,6 +32,7 @@ typedef struct {
   float riseScale;            // second band on the rising side, relative to the crest
   float aheadStrength;        // multiplier on the shadow ahead of the bend
   float tightFade;            // how much the shading at the fold thins as the radius shrinks to a crease (0..1)
+  float backShowThrough;      // how much of the front shows through the back of a single sheet (0 = opaque)
 } RNCPageCurlShading;
 
 @interface RNCPageCurlRenderer : MTKView

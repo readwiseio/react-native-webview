@@ -32,7 +32,7 @@ typedef struct {
   simd_float4 shadingA;
   simd_float4 shadingB;
   simd_float4 shadingC;
-  // D = ahead strength, tight fade, 0, 0
+  // D = ahead strength, tight fade, back show-through, 0
   simd_float4 shadingD;
 } RNCPageCurlUniforms;
 
@@ -140,7 +140,18 @@ fragment float4 sheetFragment(VOut in [[stage_in]],
   } else {
     float bu = u.mirrored > 0.5 ? in.uv.x : 1.0 - in.uv.x;
     float2 tc = u.backTexRect.xy + float2(bu, in.uv.y) * u.backTexRect.zw;
-    color = u.hasBack > 0.5 ? back.sample(smp, tc).rgb : u.backColor.rgb;
+    if (u.hasBack > 0.5) {
+      color = back.sample(smp, tc).rgb;
+    } else {
+      color = u.backColor.rgb;
+      if (u.hasFront > 0.5) {
+        // the paper is slightly translucent: the front shows through faintly, mirrored, as its
+        // deviation from the paper colour (shadingD.z = how much)
+        float fu = u.mirrored > 0.5 ? 1.0 - in.uv.x : in.uv.x;
+        float3 ink = front.sample(smp, u.frontTexRect.xy + float2(fu, in.uv.y) * u.frontTexRect.zw).rgb;
+        color = clamp(color - u.shadingD.z * (u.paperColor.rgb - ink), 0.0, 1.0);
+      }
+    }
   }
   if (u.curling < 0.5 || u.radius <= 0.0) {
     return float4(color, 1.0);
@@ -267,7 +278,7 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
     _highlightOpacity = 0.2;
     _underPages = @[];
     _sheetBackTexRect = CGRectMake(0, 0, 1, 1);
-    RNCPageCurlShading shading = {0.5, 0.9, 0.6, 0.35, 0.8, 2.4, 0.55, 0.62, 0.13, 0.35, 1.0, 0.7};
+    RNCPageCurlShading shading = {0.5, 0.9, 0.6, 0.35, 0.8, 2.4, 0.55, 0.62, 0.13, 0.35, 1.0, 0.7, 0.15};
     _shading = shading;
     _curlBendStrength = 1;
     _queue = [device newCommandQueue];
@@ -426,7 +437,7 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
   u.shadingA = simd_make_float4(_shading.castWidthFloor, _shading.castWidthPerRadius, _shading.castStrengthFloor, _shading.castSoftness);
   u.shadingB = simd_make_float4(_shading.aheadNear, _shading.aheadFar, _shading.bendDarken, _shading.crestPosition);
   u.shadingC = simd_make_float4(_shading.crestWidth, _shading.riseScale, (float)_curlBendStrength, 0);
-  u.shadingD = simd_make_float4(_shading.aheadStrength, _shading.tightFade, 0, 0);
+  u.shadingD = simd_make_float4(_shading.aheadStrength, _shading.tightFade, _shading.backShowThrough, 0);
   u.paperColor = RNCPageCurlFloat4(_paperColor, 1);
   u.backColor = RNCPageCurlFloat4(_backColor, 1);
   u.shadowColor = RNCPageCurlFloat4(_shadowColor, _shadowOpacity);

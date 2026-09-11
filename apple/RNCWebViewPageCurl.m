@@ -28,6 +28,7 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"riseScale": @0.35,
     @"aheadStrength": @1.0,
     @"tightFade": @0.7,
+    @"backShowThrough": @0.15,
     @"completeFraction": @0.5,
     @"flickVelocity": @300,
     @"durationBase": @0.18,
@@ -334,7 +335,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     (float)[self tune:@"castWidthFloor"], (float)[self tune:@"castWidthPerRadius"], (float)[self tune:@"castStrengthFloor"],
     (float)[self tune:@"castSoftness"], (float)[self tune:@"aheadNear"], (float)[self tune:@"aheadFar"], (float)[self tune:@"bendDarken"],
     (float)[self tune:@"crestPosition"], (float)[self tune:@"crestWidth"], (float)[self tune:@"riseScale"],
-    (float)[self tune:@"aheadStrength"], (float)[self tune:@"tightFade"],
+    (float)[self tune:@"aheadStrength"], (float)[self tune:@"tightFade"], (float)[self tune:@"backShowThrough"],
   };
   _renderer.shading = shading;
   NSMutableString *summary = [NSMutableString string];
@@ -499,15 +500,11 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 // While the curl is on the reader must never scroll by touch: every scroll view inside the webview
 // (the document's and WebKit's per-overflow-element ones, which it recreates as chunks load) has
 // user scrolling turned off, and the remaining pan and long-press recognizers wait for the curl pan.
-// Programmatic scrolling by the manager is unaffected. Rescanned at every touch-down.
+// Programmatic scrolling by the manager is unaffected. Rescanned at every touch-down. None of this
+// is undone: the host rebuilds the webview when it switches the curl off.
 - (void)makeWebPansYieldToCurl
 {
-  [self setWebScrollingEnabled:NO];
-}
-
-- (void)setWebScrollingEnabled:(BOOL)enabled
-{
-  if (_webView == nil) {
+  if (_webView == nil || _pan == nil) {
     return;
   }
   NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:_webView];
@@ -518,22 +515,22 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     [stack removeLastObject];
     if ([view isKindOfClass:[UIScrollView class]]) {
       UIScrollView *scrollView = (UIScrollView *)view;
-      if (scrollView.scrollEnabled != enabled) {
-        scrollView.scrollEnabled = enabled;
+      if (scrollView.scrollEnabled) {
+        scrollView.scrollEnabled = NO;
         scrollViews += 1;
       }
     }
     for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
       BOOL isPan = [recognizer isKindOfClass:[UIPanGestureRecognizer class]];
       BOOL isLongPress = [recognizer isKindOfClass:[UILongPressGestureRecognizer class]];
-      if ((isPan || isLongPress) && recognizer != _pan && _pan != nil && !enabled) {
+      if ((isPan || isLongPress) && recognizer != _pan) {
         [recognizer requireGestureRecognizerToFail:_pan];
         recognizers += 1;
       }
     }
     [stack addObjectsFromArray:view.subviews];
   }
-  NSLog(@"[page-curl] web scrolling %@: %lu scroll views changed, %lu recognizers yield to the curl pan", enabled ? @"restored" : @"off",
+  NSLog(@"[page-curl] web scrolling off: %lu scroll views changed, %lu recognizers yield to the curl pan",
         (unsigned long)scrollViews, (unsigned long)recognizers);
 }
 
@@ -569,7 +566,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   NSLog(@"[page-curl] teardown");
   _enabled = NO;
   [self stopAnimation];
-  [self setWebScrollingEnabled:YES];
   if (_pan != nil) {
     [_pan.view removeGestureRecognizer:_pan];
     _pan = nil;
@@ -700,7 +696,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   RNCPageCurlSlot *current = [self slot:RNCPageCurlSlotCurrent];
   RNCPageCurlSlot *target = [self slot:direction];
   if (!_spread) {
-    _renderer.mirrored = !next;
+    // one sheet hinged at the left edge for both directions: a turn back unfolds the previous page
+    // from over that same edge, it is not a mirrored right-hand sheet
+    _renderer.mirrored = NO;
     if (next) {
       _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:target.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
       _renderer.sheet = [RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]];
