@@ -19,9 +19,6 @@ import {
 import {
   IOSWebViewProps,
   DecelerationRateConstant,
-  WebViewSnapshotEvent,
-  WebViewSnapshotOptions,
-  WebViewSnapshotResult,
   WebViewSourceUri,
 } from './WebViewTypes';
 
@@ -90,8 +87,8 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
       incognito,
       decelerationRate: decelerationRateProp,
       onShouldStartLoadWithRequest: onShouldStartLoadWithRequestProp,
-      onSnapshot: onSnapshotProp,
       onPageCurl: onPageCurlProp,
+      pageCurlTuning,
       ...otherProps
     },
     ref
@@ -99,34 +96,6 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
     const webViewRef = useRef<React.ComponentRef<
       HostComponent<NativeProps>
     > | null>(null);
-
-    const pendingSnapshots = useRef(
-      new Map<
-        number,
-        {
-          resolve: (result: WebViewSnapshotResult) => void;
-          reject: (error: Error) => void;
-        }
-      >()
-    );
-    const nextSnapshotRequestId = useRef(1);
-
-    const onSnapshot = useCallback(
-      (event: WebViewSnapshotEvent) => {
-        const { requestId, error, ...result } = event.nativeEvent;
-        const pending = pendingSnapshots.current.get(requestId);
-        pendingSnapshots.current.delete(requestId);
-        if (pending) {
-          if (error) {
-            pending.reject(new Error(error));
-          } else {
-            pending.resolve(result);
-          }
-        }
-        onSnapshotProp?.(event);
-      },
-      [onSnapshotProp]
-    );
 
     const onShouldStartLoadWithRequestCallback = useCallback(
       (shouldStart: boolean, _url: string, lockIdentifier = 0) => {
@@ -195,25 +164,6 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
         setTintColor: (red: number, green: number, blue: number, alpha: number) =>
           webViewRef.current &&
           Commands.setTintColor(webViewRef.current, red, green, blue, alpha),
-        takeSnapshot: (
-          options: WebViewSnapshotOptions = {}
-        ): Promise<WebViewSnapshotResult> =>
-          new Promise((resolve, reject) => {
-            if (!webViewRef.current) {
-              reject(new Error('webview not mounted'));
-              return;
-            }
-            const requestId = nextSnapshotRequestId.current++;
-            pendingSnapshots.current.set(requestId, { resolve, reject });
-            Commands.takeSnapshot(
-              webViewRef.current,
-              requestId,
-              options.afterScreenUpdates ?? true
-            );
-          }),
-        pageCurlSetEnabled: (enabled: boolean) =>
-          webViewRef.current &&
-          Commands.pageCurlSetEnabled(webViewRef.current, enabled),
       }),
       [setViewState, webViewRef]
     );
@@ -305,8 +255,8 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
         onOpenWindow={onOpenWindowProp && onOpenWindow}
         hasOnOpenWindowEvent={onOpenWindowProp !== undefined}
         onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
-        onSnapshot={onSnapshot}
         onPageCurl={onPageCurlProp}
+        pageCurlTuning={pageCurlTuning && JSON.stringify(pageCurlTuning)}
         onContentProcessDidTerminate={onContentProcessDidTerminate}
         injectedJavaScript={injectedJavaScript}
         injectedJavaScriptBeforeContentLoaded={

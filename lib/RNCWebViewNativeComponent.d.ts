@@ -1,4 +1,4 @@
-import type { HostComponent, ViewProps } from 'react-native';
+import type { ColorValue, HostComponent, ViewProps } from 'react-native';
 import { DirectEventHandler, Double, Int32, WithDefault } from 'react-native/Libraries/Types/CodegenTypes';
 export type WebViewNativeEvent = Readonly<{
     url: string;
@@ -30,16 +30,6 @@ export type WebViewNativeTouchEndEvent = Readonly<{
     pointerCount: Int32;
     x: Double;
     y: Double;
-}>;
-export type WebViewSnapshotEvent = Readonly<{
-    requestId: Int32;
-    uri: string;
-    width: Double;
-    height: Double;
-    scale: Double;
-    captureMs: Double;
-    encodeMs: Double;
-    error: string;
 }>;
 export type WebViewPageCurlEvent = Readonly<{
     type: string;
@@ -195,18 +185,17 @@ export interface NativeProps extends ViewProps {
     dragInteractionEnabled?: WithDefault<boolean, true>;
     pageCurlEnabled?: boolean;
     pageCurlSpine?: WithDefault<'edge' | 'middle', 'edge'>;
-    pageCurlPaperColor?: string;
-    pageCurlBackColor?: string;
-    pageCurlShadowColor?: string;
+    pageCurlPaperColor?: ColorValue;
+    pageCurlBackColor?: ColorValue;
+    pageCurlShadowColor?: ColorValue;
     pageCurlShadowOpacity?: WithDefault<Double, 0.35>;
-    pageCurlHighlightColor?: string;
+    pageCurlHighlightColor?: ColorValue;
     pageCurlHighlightOpacity?: WithDefault<Double, 0.2>;
     pageCurlTuning?: string;
     textInteractionEnabled?: WithDefault<boolean, true>;
     useSharedProcessPool?: WithDefault<boolean, true>;
     onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;
     onCustomMenuSelection?: DirectEventHandler<WebViewCustomMenuSelectionEvent>;
-    onSnapshot?: DirectEventHandler<WebViewSnapshotEvent>;
     onPageCurl?: DirectEventHandler<WebViewPageCurlEvent>;
     onFileDownload?: DirectEventHandler<WebViewDownloadEvent>;
     menuItems?: ReadonlyArray<Readonly<{
@@ -276,8 +265,6 @@ export interface NativeCommands {
     clearCache: (viewRef: React.ElementRef<HostComponent<NativeProps>>, includeDiskFiles: boolean) => void;
     clearHistory: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
     setTintColor: (viewRef: React.ElementRef<HostComponent<NativeProps>>, red: Double, green: Double, blue: Double, alpha: Double) => void;
-    takeSnapshot: (viewRef: React.ElementRef<HostComponent<NativeProps>>, requestId: Int32, afterScreenUpdates: boolean) => void;
-    pageCurlSetEnabled: (viewRef: React.ElementRef<HostComponent<NativeProps>>, enabled: boolean) => void;
 }
 export declare const Commands: NativeCommands;
 declare const _default: HostComponent<NativeProps>;

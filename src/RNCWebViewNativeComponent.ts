@@ -1,4 +1,4 @@
-import type { HostComponent, ViewProps } from 'react-native';
+import type { ColorValue, HostComponent, ViewProps } from 'react-native';
 import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
 import {
   DirectEventHandler,
@@ -38,16 +38,6 @@ export type WebViewNativeTouchEndEvent = Readonly<{
   pointerCount: Int32;
   x: Double;
   y: Double;
-}>;
-export type WebViewSnapshotEvent = Readonly<{
-  requestId: Int32;
-  uri: string;
-  width: Double;
-  height: Double;
-  scale: Double;
-  captureMs: Double;
-  encodeMs: Double;
-  error: string;
 }>;
 export type WebViewPageCurlEvent = Readonly<{
   type: string;
@@ -265,19 +255,17 @@ export interface NativeProps extends ViewProps {
   // iOS only (Readwise custom): Books-style page curl host over the webview
   pageCurlEnabled?: boolean;
   pageCurlSpine?: WithDefault<'edge' | 'middle', 'edge'>;
-  pageCurlPaperColor?: string;
-  pageCurlBackColor?: string;
-  pageCurlShadowColor?: string;
+  pageCurlPaperColor?: ColorValue;
+  pageCurlBackColor?: ColorValue;
+  pageCurlShadowColor?: ColorValue;
   pageCurlShadowOpacity?: WithDefault<Double, 0.35>;
-  pageCurlHighlightColor?: string;
+  pageCurlHighlightColor?: ColorValue;
   pageCurlHighlightOpacity?: WithDefault<Double, 0.2>;
   pageCurlTuning?: string;
   textInteractionEnabled?: WithDefault<boolean, true>;
   useSharedProcessPool?: WithDefault<boolean, true>;
   onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;
   onCustomMenuSelection?: DirectEventHandler<WebViewCustomMenuSelectionEvent>;
-  // iOS only (Readwise custom): result of the takeSnapshot command
-  onSnapshot?: DirectEventHandler<WebViewSnapshotEvent>;
   onPageCurl?: DirectEventHandler<WebViewPageCurlEvent>;
   onFileDownload?: DirectEventHandler<WebViewDownloadEvent>;
 
@@ -374,15 +362,6 @@ export interface NativeCommands {
     blue: Double,
     alpha: Double
   ) => void;
-  takeSnapshot: (
-    viewRef: React.ElementRef<HostComponent<NativeProps>>,
-    requestId: Int32,
-    afterScreenUpdates: boolean
-  ) => void;
-  pageCurlSetEnabled: (
-    viewRef: React.ElementRef<HostComponent<NativeProps>>,
-    enabled: boolean
-  ) => void;
 }
 
 export const Commands = codegenNativeCommands<NativeCommands>({
@@ -399,8 +378,6 @@ export const Commands = codegenNativeCommands<NativeCommands>({
     'clearCache',
     'clearHistory',
     'setTintColor',
-    'takeSnapshot',
-    'pageCurlSetEnabled',
   ],
 });
 

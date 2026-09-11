@@ -8,6 +8,7 @@
 #import <react/renderer/components/RNCWebViewSpec/Props.h>
 #import <react/renderer/components/RNCWebViewSpec/RCTComponentViewHelpers.h>
 
+#import <React/RCTConversions.h>
 #import <React/RCTFabricComponentsPlugins.h>
 
 using namespace facebook::react;
@@ -196,22 +197,6 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
                 webViewEventEmitter->onCustomMenuSelection(data);
             }
         };
-        _view.onSnapshot = [self](NSDictionary* dictionary) {
-            if (_eventEmitter) {
-                auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
-                facebook::react::RNCWebViewEventEmitter::OnSnapshot data = {
-                    .requestId = [[dictionary valueForKey:@"requestId"] intValue],
-                    .uri = std::string([[dictionary valueForKey:@"uri"] UTF8String]),
-                    .width = [[dictionary valueForKey:@"width"] doubleValue],
-                    .height = [[dictionary valueForKey:@"height"] doubleValue],
-                    .scale = [[dictionary valueForKey:@"scale"] doubleValue],
-                    .captureMs = [[dictionary valueForKey:@"captureMs"] doubleValue],
-                    .encodeMs = [[dictionary valueForKey:@"encodeMs"] doubleValue],
-                    .error = std::string([[dictionary valueForKey:@"error"] UTF8String])
-                };
-                webViewEventEmitter->onSnapshot(data);
-            }
-        };
         _view.onPageCurl = [self](NSDictionary* dictionary) {
             if (_eventEmitter) {
                 auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
@@ -296,6 +281,11 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
         _view.name = RCTNSStringFromString(newViewProps.name);      \
     }
 
+#define REMAP_WEBVIEW_COLOR_PROP(name)                              \
+    if (oldViewProps.name != newViewProps.name) {                   \
+        _view.name = RCTUIColorFromSharedColor(newViewProps.name);  \
+    }
+
     REMAP_WEBVIEW_PROP(scrollEnabled)
     REMAP_WEBVIEW_STRING_PROP(injectedJavaScript)
     REMAP_WEBVIEW_STRING_PROP(injectedJavaScriptBeforeContentLoaded)
@@ -347,27 +337,17 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     if (oldViewProps.pageCurlSpine != newViewProps.pageCurlSpine) {
         _view.pageCurlSpine = RCTNSStringFromString(toString(newViewProps.pageCurlSpine));
     }
-    if (oldViewProps.pageCurlPaperColor != newViewProps.pageCurlPaperColor) {
-        _view.pageCurlPaperColor = RCTNSStringFromString(newViewProps.pageCurlPaperColor);
-    }
-    if (oldViewProps.pageCurlBackColor != newViewProps.pageCurlBackColor) {
-        _view.pageCurlBackColor = RCTNSStringFromString(newViewProps.pageCurlBackColor);
-    }
-    if (oldViewProps.pageCurlShadowColor != newViewProps.pageCurlShadowColor) {
-        _view.pageCurlShadowColor = RCTNSStringFromString(newViewProps.pageCurlShadowColor);
-    }
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlPaperColor)
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlBackColor)
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlShadowColor)
+    REMAP_WEBVIEW_COLOR_PROP(pageCurlHighlightColor)
     if (oldViewProps.pageCurlShadowOpacity != newViewProps.pageCurlShadowOpacity) {
         _view.pageCurlShadowOpacity = @(newViewProps.pageCurlShadowOpacity);
-    }
-    if (oldViewProps.pageCurlHighlightColor != newViewProps.pageCurlHighlightColor) {
-        _view.pageCurlHighlightColor = RCTNSStringFromString(newViewProps.pageCurlHighlightColor);
     }
     if (oldViewProps.pageCurlHighlightOpacity != newViewProps.pageCurlHighlightOpacity) {
         _view.pageCurlHighlightOpacity = @(newViewProps.pageCurlHighlightOpacity);
     }
-    if (oldViewProps.pageCurlTuning != newViewProps.pageCurlTuning) {
-        _view.pageCurlTuning = RCTNSStringFromString(newViewProps.pageCurlTuning);
-    }
+    REMAP_WEBVIEW_STRING_PROP(pageCurlTuning)
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)
@@ -620,14 +600,6 @@ Class<RCTComponentViewProtocol> RNCWebViewCls(void)
                                       blue:blue / 255.0
                                      alpha:alpha];
     [_view setTintColor:color];
-}
-
-- (void)takeSnapshot:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates {
-    [_view takeSnapshotWithRequestId:requestId afterScreenUpdates:afterScreenUpdates];
-}
-
-- (void)pageCurlSetEnabled:(BOOL)enabled {
-    [_view pageCurlSetEnabled:enabled];
 }
 
 @end

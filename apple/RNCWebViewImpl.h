@@ -118,15 +118,14 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 // Android-only event; declared here as a no-op so the shared codegen interface
 // stays consistent across platforms. Never fired on iOS/macOS.
 @property (nonatomic, copy) RCTDirectEventBlock onNativeTouchEnd;
-@property (nonatomic, copy) RCTDirectEventBlock onSnapshot;
 @property (nonatomic, copy) RCTDirectEventBlock onPageCurl;
 @property (nonatomic, assign) BOOL pageCurlEnabled;
 @property (nonatomic, copy) NSString * _Nullable pageCurlSpine;
-@property (nonatomic, copy) NSString * _Nullable pageCurlPaperColor;
-@property (nonatomic, copy) NSString * _Nullable pageCurlBackColor;
-@property (nonatomic, copy) NSString * _Nullable pageCurlShadowColor;
+@property (nonatomic, strong) UIColor * _Nullable pageCurlPaperColor;
+@property (nonatomic, strong) UIColor * _Nullable pageCurlBackColor;
+@property (nonatomic, strong) UIColor * _Nullable pageCurlShadowColor;
 @property (nonatomic, strong) NSNumber * _Nullable pageCurlShadowOpacity;
-@property (nonatomic, copy) NSString * _Nullable pageCurlHighlightColor;
+@property (nonatomic, strong) UIColor * _Nullable pageCurlHighlightColor;
 @property (nonatomic, strong) NSNumber * _Nullable pageCurlHighlightOpacity;
 @property (nonatomic, copy) NSString * _Nullable pageCurlTuning;
 #if !TARGET_OS_OSX
@@ -168,10 +167,6 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 - (void)requestFocus;
 - (void)clearCache:(BOOL)includeDiskFiles;
 - (void)setTintColor:(UIColor *)tintColor;
-#if !TARGET_OS_OSX
-- (void)takeSnapshotWithRequestId:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates;
-- (void)pageCurlSetEnabled:(BOOL)enabled;
-#endif
 #ifdef RCT_NEW_ARCH_ENABLED
 - (void)destroyWebView;
 #endif

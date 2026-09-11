@@ -20,13 +20,13 @@ typedef void (^RNCPageCurlEventBlock)(NSDictionary *event);
 // "edge" = one sheet with the spine at the left edge (default), "middle" = facing pages with
 // the spine in the center
 @property (nonatomic, copy, nullable) NSString *spine;
-// CSS colors; when the paper is unset the top-left pixel of the current bake is used, and the
-// back of a sheet defaults to the paper faded toward the opposite extreme
-@property (nonatomic, copy, nullable) NSString *paperColor;
-@property (nonatomic, copy, nullable) NSString *backColor;
-@property (nonatomic, copy, nullable) NSString *shadowColor;
+// when the paper is unset the top-left pixel of the current bake is used, and the back of a
+// sheet defaults to the paper faded toward the opposite extreme
+@property (nonatomic, strong, nullable) UIColor *paperColor;
+@property (nonatomic, strong, nullable) UIColor *backColor;
+@property (nonatomic, strong, nullable) UIColor *shadowColor;
 @property (nonatomic, strong, nullable) NSNumber *shadowOpacity;
-@property (nonatomic, copy, nullable) NSString *highlightColor;
+@property (nonatomic, strong, nullable) UIColor *highlightColor;
 @property (nonatomic, strong, nullable) NSNumber *highlightOpacity;
 // JSON object of tuning knobs (radius, bend-in, shadow widths, completion timing); unknown keys
 // are ignored and missing keys keep their defaults, so knobs can be added without codegen

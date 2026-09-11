@@ -126,7 +126,6 @@ RCT_CUSTOM_VIEW_PROPERTY(hasOnOpenWindowEvent, BOOL, RNCWebViewImpl) {}
 RCT_EXPORT_VIEW_PROPERTY(onCustomMenuSelection, RCTDirectEventBlock)
 // Android-only event; exported here as a no-op for codegen-interface parity. Never fired on iOS.
 RCT_EXPORT_VIEW_PROPERTY(onNativeTouchEnd, RCTDirectEventBlock)
-RCT_EXPORT_VIEW_PROPERTY(onSnapshot, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(onPageCurl, RCTDirectEventBlock)
 RCT_CUSTOM_VIEW_PROPERTY(pullToRefreshEnabled, BOOL, RNCWebViewImpl) {
   view.pullToRefreshEnabled = json == nil ? false : [RCTConvert BOOL: json];
@@ -189,11 +188,11 @@ RCT_CUSTOM_VIEW_PROPERTY(pageCurlEnabled, BOOL, RNCWebViewImpl) {
   view.pageCurlEnabled = json == nil ? false : [RCTConvert BOOL: json];
 }
 RCT_EXPORT_VIEW_PROPERTY(pageCurlSpine, NSString)
-RCT_EXPORT_VIEW_PROPERTY(pageCurlPaperColor, NSString)
-RCT_EXPORT_VIEW_PROPERTY(pageCurlBackColor, NSString)
-RCT_EXPORT_VIEW_PROPERTY(pageCurlShadowColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlPaperColor, UIColor)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlBackColor, UIColor)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlShadowColor, UIColor)
 RCT_EXPORT_VIEW_PROPERTY(pageCurlShadowOpacity, NSNumber)
-RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightColor, UIColor)
 RCT_EXPORT_VIEW_PROPERTY(pageCurlHighlightOpacity, NSNumber)
 RCT_EXPORT_VIEW_PROPERTY(pageCurlTuning, NSString)
 RCT_CUSTOM_VIEW_PROPERTY(dragInteractionEnabled, BOOL, RNCWebViewImpl) {
@@ -254,20 +253,6 @@ RCT_EXPORT_METHOD(setTintColor:(nonnull NSNumber *)reactTag red:(double)red gree
                                        alpha:alpha];
       [view setTintColor:color];
     }
-  }];
-}
-
-RCT_EXPORT_METHOD(takeSnapshot:(nonnull NSNumber *)reactTag requestId:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates)
-{
-  [self.bridge.uiManager addUIBlock:^(__unused RCTUIManager *uiManager, NSDictionary<NSNumber *, BASE_VIEW_PER_OS() *> *viewRegistry) {
-    RNCWebViewImpl *view = (RNCWebViewImpl *)viewRegistry[reactTag];
-    if (![view isKindOfClass:[RNCWebViewImpl class]]) {
-      RCTLogError(@"Invalid view returned from registry, expecting RNCWebView, got: %@", view);
-      return;
-    }
-#if !TARGET_OS_OSX
-    [view takeSnapshotWithRequestId:requestId afterScreenUpdates:afterScreenUpdates];
-#endif
   }];
 }
 

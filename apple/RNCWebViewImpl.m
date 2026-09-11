@@ -770,57 +770,6 @@ RCTAutoInsetsProtocol>
 }
 
 #if !TARGET_OS_OSX
-- (void)takeSnapshotWithRequestId:(NSInteger)requestId afterScreenUpdates:(BOOL)afterScreenUpdates
-{
-  if (_webView == nil) {
-    [self emitSnapshot:requestId path:nil image:nil captureMs:0 encodeMs:0 error:@"webview not created"];
-    return;
-  }
-  WKSnapshotConfiguration *config = [WKSnapshotConfiguration new];
-  config.afterScreenUpdates = afterScreenUpdates;
-  CFTimeInterval start = CACurrentMediaTime();
-  __weak __typeof(self) weakSelf = self;
-  [_webView takeSnapshotWithConfiguration:config completionHandler:^(UIImage *image, NSError *error) {
-    double captureMs = (CACurrentMediaTime() - start) * 1000.0;
-    if (error != nil || image == nil) {
-      [weakSelf emitSnapshot:requestId path:nil image:nil captureMs:captureMs encodeMs:0
-                       error:error.localizedDescription ?: @"snapshot returned no image"];
-      return;
-    }
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      CFTimeInterval encodeStart = CACurrentMediaTime();
-      NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                        [NSString stringWithFormat:@"rnc-webview-snapshot-%ld.png", (long)requestId]];
-      BOOL written = [UIImagePNGRepresentation(image) writeToFile:path atomically:YES];
-      double encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0;
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf emitSnapshot:requestId path:written ? path : nil image:written ? image : nil
-                     captureMs:captureMs encodeMs:encodeMs error:written ? nil : @"could not write snapshot"];
-      });
-    });
-  }];
-}
-
-- (void)emitSnapshot:(NSInteger)requestId path:(NSString *)path image:(UIImage *)image
-           captureMs:(double)captureMs encodeMs:(double)encodeMs error:(NSString *)error
-{
-  NSLog(@"[snapshot-spike] request=%ld capture=%.1fms encode=%.1fms size=%.0fx%.0f@%.0fx error=%@ path=%@",
-        (long)requestId, captureMs, encodeMs, image.size.width, image.size.height, image.scale, error ?: @"none", path ?: @"");
-  if (!self.onSnapshot) {
-    return;
-  }
-  self.onSnapshot(@{
-    @"requestId": @(requestId),
-    @"uri": path ? [[NSURL fileURLWithPath:path] absoluteString] : @"",
-    @"width": @(image ? image.size.width * image.scale : 0),
-    @"height": @(image ? image.size.height * image.scale : 0),
-    @"scale": @(image ? image.scale : 0),
-    @"captureMs": @(captureMs),
-    @"encodeMs": @(encodeMs),
-    @"error": error ?: @"",
-  });
-}
-
 - (void)setPageCurlEnabled:(BOOL)pageCurlEnabled
 {
   BOOL changed = pageCurlEnabled != _pageCurlEnabled;
@@ -830,21 +779,21 @@ RCTAutoInsetsProtocol>
   }
 }
 
-- (void)setPageCurlPaperColor:(NSString *)pageCurlPaperColor
+- (void)setPageCurlPaperColor:(UIColor *)pageCurlPaperColor
 {
-  _pageCurlPaperColor = [pageCurlPaperColor copy];
+  _pageCurlPaperColor = pageCurlPaperColor;
   _pageCurl.paperColor = pageCurlPaperColor;
 }
 
-- (void)setPageCurlBackColor:(NSString *)pageCurlBackColor
+- (void)setPageCurlBackColor:(UIColor *)pageCurlBackColor
 {
-  _pageCurlBackColor = [pageCurlBackColor copy];
+  _pageCurlBackColor = pageCurlBackColor;
   _pageCurl.backColor = pageCurlBackColor;
 }
 
-- (void)setPageCurlShadowColor:(NSString *)pageCurlShadowColor
+- (void)setPageCurlShadowColor:(UIColor *)pageCurlShadowColor
 {
-  _pageCurlShadowColor = [pageCurlShadowColor copy];
+  _pageCurlShadowColor = pageCurlShadowColor;
   _pageCurl.shadowColor = pageCurlShadowColor;
 }
 
@@ -854,9 +803,9 @@ RCTAutoInsetsProtocol>
   _pageCurl.shadowOpacity = pageCurlShadowOpacity;
 }
 
-- (void)setPageCurlHighlightColor:(NSString *)pageCurlHighlightColor
+- (void)setPageCurlHighlightColor:(UIColor *)pageCurlHighlightColor
 {
-  _pageCurlHighlightColor = [pageCurlHighlightColor copy];
+  _pageCurlHighlightColor = pageCurlHighlightColor;
   _pageCurl.highlightColor = pageCurlHighlightColor;
 }
 
@@ -878,6 +827,7 @@ RCTAutoInsetsProtocol>
   _pageCurl.spine = pageCurlSpine;
 }
 
+// the one path that creates or destroys the curl controller, driven by the pageCurlEnabled prop
 - (void)pageCurlSetEnabled:(BOOL)enabled
 {
   if (!enabled && _pageCurl == nil) {

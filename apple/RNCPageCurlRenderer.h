@@ -3,6 +3,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// per-frame logging (every draw and finger move) is for tuning on a dev build only
+#if DEBUG
+#define RNCPageCurlFrameLog(...) NSLog(__VA_ARGS__)
+#else
+#define RNCPageCurlFrameLog(...)
+#endif
+
 // a page bitmap placed in the view; texture nil draws paper; texRect selects part of the texture
 @interface RNCPageCurlPage : NSObject
 @property (nonatomic, strong, nullable) id<MTLTexture> texture;
@@ -11,12 +18,6 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)pageWithTexture:(nullable id<MTLTexture>)texture rect:(CGRect)rect texRect:(CGRect)texRect;
 @end
 
-/**
- * Draws the page curl: flat pages underneath, then one sheet bent around a cylinder whose
- * axis is set by the curl start point S and the dragged point F (both in sheet-local
- * coordinates where the sheet curls from its right edge; `mirrored` flips that to the left).
- * Every color comes from the host: paper, sheet back, shadow and highlight.
- */
 // shading knobs, all read from the host's tuning JSON (see RNCWebViewPageCurl); widths are
 // multiples of the bend radius, strengths multiples of the shadow/highlight opacity
 typedef struct {
@@ -26,15 +27,21 @@ typedef struct {
   float castSoftness;         // 0 = full strength right at the edge; higher fades in before it
   float aheadNear;            // under-page shadow ahead of the bend starts fading here, x radius
   float aheadFar;             // and is gone here, x radius
+  float aheadStrength;        // multiplier on the shadow ahead of the bend
   float bendDarken;           // darkening at the steepest part of the bend
   float crestPosition;        // highlight band centre along the bend, in half-turns (0..1)
   float crestWidth;           // highlight band width, in half-turns
   float riseScale;            // second band on the rising side, relative to the crest
-  float aheadStrength;        // multiplier on the shadow ahead of the bend
   float tightFade;            // how much the shading at the fold thins as the radius shrinks to a crease (0..1)
   float backShowThrough;      // how much of the front shows through the back of a single sheet (0 = opaque)
 } RNCPageCurlShading;
 
+/**
+ * Draws the page curl: flat pages underneath, then one sheet bent around a cylinder whose
+ * axis is set by the curl start point S and the dragged point F (both in sheet-local
+ * coordinates where the sheet curls from its right edge; `mirrored` flips that to the left).
+ * Every input comes from the host and is set before the first draw; nothing is read back.
+ */
 @interface RNCPageCurlRenderer : MTKView
 
 @property (nonatomic, assign) RNCPageCurlShading shading;
@@ -46,7 +53,7 @@ typedef struct {
 @property (nonatomic, strong) UIColor *highlightColor;
 @property (nonatomic, assign) CGFloat highlightOpacity;
 
-@property (nonatomic, copy) NSArray<RNCPageCurlPage *> *underPages;
+@property (nonatomic, copy, nullable) NSArray<RNCPageCurlPage *> *underPages;
 @property (nonatomic, strong, nullable) RNCPageCurlPage *sheet;
 @property (nonatomic, strong, nullable) id<MTLTexture> sheetBackTexture;
 @property (nonatomic, assign) CGRect sheetBackTexRect;
@@ -60,15 +67,9 @@ typedef struct {
 @property (nonatomic, assign) CGFloat curlRadiusMax;
 // 0..1 multiplier on the crease shading, ramped in by the host over the first part of the drag
 @property (nonatomic, assign) CGFloat curlBendStrength;
-// 0 flat, 1 fully turned; fades the cast shadows out at the end of a turn
-@property (nonatomic, assign) CGFloat curlProgress;
 
 - (instancetype)initWithFrame:(CGRect)frame;
 - (nullable id<MTLTexture>)textureFromImage:(UIImage *)image;
-// draws now, whether or not the view is visible
-- (void)renderNow;
-// one line of the curl geometry and where key sheet points land, for per-frame logging
-- (NSString *)curlDescription;
 
 @end
 

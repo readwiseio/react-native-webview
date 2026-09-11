@@ -14,7 +14,6 @@ typedef struct {
   simd_float2 axisOrigin;
   simd_float2 axisNormal;
   float radius;
-  float progress;
   float mirrored;
   float curling;
   simd_float4 paperColor;
@@ -26,14 +25,20 @@ typedef struct {
   float hasFront;
   float hasBack;
   float radiusMax;
-  float pad;
-  // shading knobs: A = cast width floor, cast width per radius, cast strength floor, cast softness;
-  // B = ahead near, ahead far, bend darken, crest position; C = crest width, rise scale
-  simd_float4 shadingA;
-  simd_float4 shadingB;
-  simd_float4 shadingC;
-  // D = ahead strength, tight fade, back show-through, 0
-  simd_float4 shadingD;
+  float bendStrength;
+  float castWidthFloor;
+  float castWidthPerRadius;
+  float castStrengthFloor;
+  float castSoftness;
+  float aheadNear;
+  float aheadFar;
+  float aheadStrength;
+  float bendDarken;
+  float crestPosition;
+  float crestWidth;
+  float riseScale;
+  float tightFade;
+  float backShowThrough;
 } RNCPageCurlUniforms;
 
 static const char *const RNCPageCurlShaderSource = R"metal(
@@ -49,7 +54,6 @@ struct Uniforms {
   float2 axisOrigin;
   float2 axisNormal;
   float radius;
-  float progress;
   float mirrored;
   float curling;
   float4 paperColor;
@@ -61,26 +65,33 @@ struct Uniforms {
   float hasFront;
   float hasBack;
   float radiusMax;
-  float pad;
-  float4 shadingA;
-  float4 shadingB;
-  float4 shadingC;
-  float4 shadingD;
+  float bendStrength;
+  float castWidthFloor;
+  float castWidthPerRadius;
+  float castStrengthFloor;
+  float castSoftness;
+  float aheadNear;
+  float aheadFar;
+  float aheadStrength;
+  float bendDarken;
+  float crestPosition;
+  float crestWidth;
+  float riseScale;
+  float tightFade;
+  float backShowThrough;
 };
 
 // shading at the fold thins out as the bend tightens: 1 at the free radius, (1 - tightFade) at a sharp crease
 static float tightness(float R, constant Uniforms &u) {
-  float fade = u.shadingD.y;
-  return (1.0 - fade) + fade * clamp(R / max(u.radiusMax, 1.0), 0.0, 1.0);
+  return (1.0 - u.tightFade) + u.tightFade * clamp(R / max(u.radiusMax, 1.0), 0.0, 1.0);
 }
 
 // the folded-over edge shadows what lies under it; it softens as the bend flattens but keeps a floor
 // so it does not vanish before the sheet has landed
 static float castShadow(float distanceOutside, float R, constant Uniforms &u) {
-  float width = u.radiusMax * u.shadingA.x + R * u.shadingA.y;
-  float floorStrength = u.shadingA.z;
-  float strength = u.shadowColor.a * (floorStrength + (1.0 - floorStrength) * R / max(u.radiusMax, 1.0));
-  return strength * (1.0 - smoothstep(-width * u.shadingA.w, width, distanceOutside));
+  float width = u.radiusMax * u.castWidthFloor + R * u.castWidthPerRadius;
+  float strength = u.shadowColor.a * (u.castStrengthFloor + (1.0 - u.castStrengthFloor) * R / max(u.radiusMax, 1.0));
+  return strength * (1.0 - smoothstep(-width * u.castSoftness, width, distanceOutside));
 }
 
 struct VOut {
@@ -146,10 +157,10 @@ fragment float4 sheetFragment(VOut in [[stage_in]],
       color = u.backColor.rgb;
       if (u.hasFront > 0.5) {
         // the paper is slightly translucent: the front shows through faintly, mirrored, as its
-        // deviation from the paper colour (shadingD.z = how much)
+        // deviation from the paper colour
         float fu = u.mirrored > 0.5 ? 1.0 - in.uv.x : in.uv.x;
         float3 ink = front.sample(smp, u.frontTexRect.xy + float2(fu, in.uv.y) * u.frontTexRect.zw).rgb;
-        color = clamp(color - u.shadingD.z * (u.paperColor.rgb - ink), 0.0, 1.0);
+        color = clamp(color - u.backShowThrough * (u.paperColor.rgb - ink), 0.0, 1.0);
       }
     }
   }
@@ -160,10 +171,9 @@ fragment float4 sheetFragment(VOut in [[stage_in]],
   float a = clamp(in.s / R, 0.0, M_PI_F);
   float sa = sin(a);
   // the bend darkens as it turns away from an overhead light, and picks up a glossy band just past the crest
-  // shadingC.z ramps the crease shading in over the first part of the drag
-  float darken = u.shadowColor.a * u.shadingB.z * u.shadingC.z * tightness(R, u) * sa * sa;
-  float crest = exp(-pow((a - u.shadingB.w * M_PI_F) / (u.shadingC.x * M_PI_F), 2.0));
-  float rise = u.shadingC.y * exp(-pow((a - 0.3 * M_PI_F) / (0.12 * M_PI_F), 2.0));
+  float darken = u.shadowColor.a * u.bendDarken * u.bendStrength * tightness(R, u) * sa * sa;
+  float crest = exp(-pow((a - u.crestPosition * M_PI_F) / (u.crestWidth * M_PI_F), 2.0));
+  float rise = u.riseScale * exp(-pow((a - 0.3 * M_PI_F) / (0.12 * M_PI_F), 2.0));
   float highlight = u.highlightColor.a * tightness(R, u) * (crest + rise);
   float cast = 0.0;
   if (frontFacing && in.s < 0.5 * M_PI_F * R) {
@@ -206,7 +216,7 @@ fragment float4 underFragment(VOut in [[stage_in]],
     float shadow;
     if (sp > 0.0) {
       // the page ahead of the bend sits in its shadow
-      shadow = u.shadowColor.a * u.shadingD.x * tightness(R, u) * (1.0 - smoothstep(R * u.shadingB.x, R * u.shadingB.y, sp));
+      shadow = u.shadowColor.a * u.aheadStrength * tightness(R, u) * (1.0 - smoothstep(R * u.aheadNear, R * u.aheadFar, sp));
     } else {
       // the page the folded-over part lands on: its edge shadows it, like the sheet's own flat front
       float2 q = in.local - u.axisNormal * (2.0 * sp - M_PI_F * R);
@@ -244,96 +254,91 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
 
 @end
 
+static const MTLPixelFormat RNCPageCurlColorFormat = MTLPixelFormatBGRA8Unorm;
+static const MTLPixelFormat RNCPageCurlDepthFormat = MTLPixelFormatDepth32Float;
+
+// compiled once per process: a renderer is made on every enable, spine change and webview rebuild
+typedef struct {
+  id<MTLRenderPipelineState> sheet;
+  id<MTLRenderPipelineState> under;
+  id<MTLDepthStencilState> depth;
+  id<MTLSamplerState> sampler;
+} RNCPageCurlPipelines;
+
+static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
+{
+  static RNCPageCurlPipelines pipelines;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    CFTimeInterval start = CACurrentMediaTime();
+    NSError *error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:[NSString stringWithUTF8String:RNCPageCurlShaderSource] options:[MTLCompileOptions new] error:&error];
+    if (library == nil) {
+      NSLog(@"[page-curl] metal: shader compile failed: %@", error);
+      return;
+    }
+    MTLRenderPipelineDescriptor *sheet = [MTLRenderPipelineDescriptor new];
+    sheet.vertexFunction = [library newFunctionWithName:@"sheetVertex"];
+    sheet.fragmentFunction = [library newFunctionWithName:@"sheetFragment"];
+    sheet.colorAttachments[0].pixelFormat = RNCPageCurlColorFormat;
+    sheet.depthAttachmentPixelFormat = RNCPageCurlDepthFormat;
+    pipelines.sheet = [device newRenderPipelineStateWithDescriptor:sheet error:&error];
+    if (pipelines.sheet == nil) {
+      NSLog(@"[page-curl] metal: sheet pipeline failed: %@", error);
+      return;
+    }
+    MTLRenderPipelineDescriptor *under = [MTLRenderPipelineDescriptor new];
+    under.vertexFunction = [library newFunctionWithName:@"underVertex"];
+    under.fragmentFunction = [library newFunctionWithName:@"underFragment"];
+    under.colorAttachments[0].pixelFormat = RNCPageCurlColorFormat;
+    under.depthAttachmentPixelFormat = RNCPageCurlDepthFormat;
+    pipelines.under = [device newRenderPipelineStateWithDescriptor:under error:&error];
+    if (pipelines.under == nil) {
+      NSLog(@"[page-curl] metal: under pipeline failed: %@", error);
+      return;
+    }
+    MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
+    depth.depthCompareFunction = MTLCompareFunctionLess;
+    depth.depthWriteEnabled = YES;
+    pipelines.depth = [device newDepthStencilStateWithDescriptor:depth];
+    MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
+    sampler.minFilter = MTLSamplerMinMagFilterLinear;
+    sampler.magFilter = MTLSamplerMinMagFilterLinear;
+    sampler.mipFilter = MTLSamplerMipFilterNotMipmapped;
+    sampler.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    sampler.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    pipelines.sampler = [device newSamplerStateWithDescriptor:sampler];
+    NSLog(@"[page-curl] metal: pipelines ready in %.1fms on %@", (CACurrentMediaTime() - start) * 1000.0, device.name);
+  });
+  return pipelines;
+}
+
 @implementation RNCPageCurlRenderer {
   id<MTLCommandQueue> _queue;
-  id<MTLRenderPipelineState> _sheetPipeline;
-  id<MTLRenderPipelineState> _underPipeline;
-  id<MTLDepthStencilState> _depthState;
-  id<MTLSamplerState> _sampler;
+  RNCPageCurlPipelines _pipelines;
   id<MTLBuffer> _gridVertices;
   id<MTLBuffer> _gridIndices;
   NSUInteger _gridIndexCount;
   id<MTLBuffer> _quadVertices;
-  MTKTextureLoader *_loader;
-  BOOL _pipelineFailed;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
 {
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   if ((self = [super initWithFrame:frame device:device])) {
-    self.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
-    self.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
+    self.colorPixelFormat = RNCPageCurlColorFormat;
+    self.depthStencilPixelFormat = RNCPageCurlDepthFormat;
     self.framebufferOnly = YES;
     self.paused = YES;
     self.enableSetNeedsDisplay = YES;
     self.opaque = YES;
     self.userInteractionEnabled = NO;
     self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _paperColor = [UIColor whiteColor];
-    _backColor = [UIColor colorWithWhite:0.88 alpha:1];
-    _shadowColor = [UIColor blackColor];
-    _shadowOpacity = 0.35;
-    _highlightColor = [UIColor whiteColor];
-    _highlightOpacity = 0.2;
-    _underPages = @[];
-    _sheetBackTexRect = CGRectMake(0, 0, 1, 1);
-    RNCPageCurlShading shading = {0.5, 0.9, 0.6, 0.35, 0.8, 2.4, 0.55, 0.62, 0.13, 0.35, 1.0, 0.7, 0.15};
-    _shading = shading;
-    _curlBendStrength = 1;
     _queue = [device newCommandQueue];
-    _loader = [[MTKTextureLoader alloc] initWithDevice:device];
-    [self buildPipelines];
+    _pipelines = RNCPageCurlSharedPipelines(device);
     [self buildMeshes];
   }
   return self;
-}
-
-- (void)buildPipelines
-{
-  CFTimeInterval start = CACurrentMediaTime();
-  NSError *error = nil;
-  MTLCompileOptions *options = [MTLCompileOptions new];
-  id<MTLLibrary> library = [self.device newLibraryWithSource:[NSString stringWithUTF8String:RNCPageCurlShaderSource] options:options error:&error];
-  if (library == nil) {
-    NSLog(@"[page-curl] metal: shader compile failed: %@", error);
-    _pipelineFailed = YES;
-    return;
-  }
-  MTLRenderPipelineDescriptor *sheet = [MTLRenderPipelineDescriptor new];
-  sheet.vertexFunction = [library newFunctionWithName:@"sheetVertex"];
-  sheet.fragmentFunction = [library newFunctionWithName:@"sheetFragment"];
-  sheet.colorAttachments[0].pixelFormat = self.colorPixelFormat;
-  sheet.depthAttachmentPixelFormat = self.depthStencilPixelFormat;
-  _sheetPipeline = [self.device newRenderPipelineStateWithDescriptor:sheet error:&error];
-  if (_sheetPipeline == nil) {
-    NSLog(@"[page-curl] metal: sheet pipeline failed: %@", error);
-    _pipelineFailed = YES;
-    return;
-  }
-  MTLRenderPipelineDescriptor *under = [MTLRenderPipelineDescriptor new];
-  under.vertexFunction = [library newFunctionWithName:@"underVertex"];
-  under.fragmentFunction = [library newFunctionWithName:@"underFragment"];
-  under.colorAttachments[0].pixelFormat = self.colorPixelFormat;
-  under.depthAttachmentPixelFormat = self.depthStencilPixelFormat;
-  _underPipeline = [self.device newRenderPipelineStateWithDescriptor:under error:&error];
-  if (_underPipeline == nil) {
-    NSLog(@"[page-curl] metal: under pipeline failed: %@", error);
-    _pipelineFailed = YES;
-    return;
-  }
-  MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
-  depth.depthCompareFunction = MTLCompareFunctionLess;
-  depth.depthWriteEnabled = YES;
-  _depthState = [self.device newDepthStencilStateWithDescriptor:depth];
-  MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
-  sampler.minFilter = MTLSamplerMinMagFilterLinear;
-  sampler.magFilter = MTLSamplerMinMagFilterLinear;
-  sampler.mipFilter = MTLSamplerMipFilterNotMipmapped;
-  sampler.sAddressMode = MTLSamplerAddressModeClampToEdge;
-  sampler.tAddressMode = MTLSamplerAddressModeClampToEdge;
-  _sampler = [self.device newSamplerStateWithDescriptor:sampler];
-  NSLog(@"[page-curl] metal: pipelines ready in %.1fms on %@", (CACurrentMediaTime() - start) * 1000.0, self.device.name);
 }
 
 - (void)buildMeshes
@@ -414,11 +419,6 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
   return texture;
 }
 
-- (void)renderNow
-{
-  [self draw];
-}
-
 #pragma mark - geometry
 
 - (RNCPageCurlUniforms)baseUniforms
@@ -432,12 +432,21 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
   u.sheetSize = simd_make_float2((float)sheetRect.size.width, (float)sheetRect.size.height);
   u.mirrored = _mirrored ? 1 : 0;
   u.curling = (_curling && _sheet != nil) ? 1 : 0;
-  u.progress = (float)_curlProgress;
   u.radiusMax = (float)MAX(_curlRadiusMax, 1);
-  u.shadingA = simd_make_float4(_shading.castWidthFloor, _shading.castWidthPerRadius, _shading.castStrengthFloor, _shading.castSoftness);
-  u.shadingB = simd_make_float4(_shading.aheadNear, _shading.aheadFar, _shading.bendDarken, _shading.crestPosition);
-  u.shadingC = simd_make_float4(_shading.crestWidth, _shading.riseScale, (float)_curlBendStrength, 0);
-  u.shadingD = simd_make_float4(_shading.aheadStrength, _shading.tightFade, _shading.backShowThrough, 0);
+  u.bendStrength = (float)_curlBendStrength;
+  u.castWidthFloor = _shading.castWidthFloor;
+  u.castWidthPerRadius = _shading.castWidthPerRadius;
+  u.castStrengthFloor = _shading.castStrengthFloor;
+  u.castSoftness = _shading.castSoftness;
+  u.aheadNear = _shading.aheadNear;
+  u.aheadFar = _shading.aheadFar;
+  u.aheadStrength = _shading.aheadStrength;
+  u.bendDarken = _shading.bendDarken;
+  u.crestPosition = _shading.crestPosition;
+  u.crestWidth = _shading.crestWidth;
+  u.riseScale = _shading.riseScale;
+  u.tightFade = _shading.tightFade;
+  u.backShowThrough = _shading.backShowThrough;
   u.paperColor = RNCPageCurlFloat4(_paperColor, 1);
   u.backColor = RNCPageCurlFloat4(_backColor, 1);
   u.shadowColor = RNCPageCurlFloat4(_shadowColor, _shadowOpacity);
@@ -460,93 +469,15 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
   return u;
 }
 
-typedef struct {
-  CGFloat x, y, z, s;
-} RNCPageCurlBent;
-
-static double RNCPageCurlSmoothstep(double e0, double e1, double x)
-{
-  double t = MIN(MAX((x - e0) / (e1 - e0), 0.0), 1.0);
-  return t * t * (3 - 2 * t);
-}
-
-// the same bend as the vertex shader, for one sheet-local point: view-space x/y, height and fold side
-- (RNCPageCurlBent)bendLocal:(CGPoint)p uniforms:(const RNCPageCurlUniforms *)u
-{
-  CGFloat nx = u->axisNormal.x, ny = u->axisNormal.y;
-  CGFloat s = (p.x - u->axisOrigin.x) * nx + (p.y - u->axisOrigin.y) * ny;
-  CGFloat px = p.x, py = p.y, z = 0;
-  CGFloat R = u->radius;
-  if (u->curling > 0.5 && s > 0) {
-    if (R > 0 && s < M_PI * R) {
-      px = p.x - nx * s + nx * R * sin(s / R);
-      py = p.y - ny * s + ny * R * sin(s / R);
-      z = R * (1 - cos(s / R));
-    } else {
-      px = p.x - nx * (2 * s - M_PI * R);
-      py = p.y - ny * (2 * s - M_PI * R);
-      z = 2 * R;
-    }
-  }
-  CGFloat rel = u->mirrored > 0.5 ? u->sheetSize.x - px : px;
-  RNCPageCurlBent bent = {u->sheetOrigin.x + rel, u->sheetOrigin.y + py, z, s};
-  return bent;
-}
-
-// per-frame debugging: geometry, where key sheet points land (the spine corners must stay put),
-// and the shade the shaders apply at fixed distances from the fold
-- (NSString *)curlDescription
-{
-  RNCPageCurlUniforms u = [self baseUniforms];
-  NSMutableString *line = [NSMutableString stringWithFormat:@"S=%.0f,%.0f F=%.0f,%.0f R=%.1f p=%.2f axis=%.0f,%.0f n=%.2f,%.2f sheet=%@ mirrored=%d curling=%d |",
-                           _curlStart.x, _curlStart.y, _curlFinger.x, _curlFinger.y, u.radius, u.progress, u.axisOrigin.x, u.axisOrigin.y,
-                           u.axisNormal.x, u.axisNormal.y, NSStringFromCGRect(_sheet.rect), _mirrored, _curling];
-  CGFloat w = u.sheetSize.x;
-  CGFloat h = u.sheetSize.y;
-  CGFloat y = _curlFinger.y;
-  for (CGFloat fraction = 0; fraction <= 1.0001; fraction += 0.25) {
-    RNCPageCurlBent bent = [self bendLocal:CGPointMake(w * fraction, y) uniforms:&u];
-    [line appendFormat:@" x%.0f->%.0f(z%.0f)", w * fraction, bent.x, bent.z];
-  }
-  RNCPageCurlBent top = [self bendLocal:CGPointMake(0, 0) uniforms:&u];
-  RNCPageCurlBent bottom = [self bendLocal:CGPointMake(0, h) uniforms:&u];
-  [line appendFormat:@" | spineTop->%.0f,%.0f(z%.0f s%.0f) spineBottom->%.0f,%.0f(z%.0f s%.0f)", top.x, top.y, top.z, top.s, bottom.x, bottom.y, bottom.z, bottom.s];
-  if (u.curling > 0.5 && u.radius > 0) {
-    double R = u.radius;
-    double a = u.shadowColor.w;
-    RNCPageCurlShading t = _shading;
-    double castWidth = u.radiusMax * t.castWidthFloor + R * t.castWidthPerRadius;
-    double castStrength = a * (t.castStrengthFloor + (1 - t.castStrengthFloor) * R / u.radiusMax);
-    double castStart = -castWidth * t.castSoftness;
-    double tight = (1 - t.tightFade) + t.tightFade * MIN(MAX(R / u.radiusMax, 0), 1);
-    double ahead = a * t.aheadStrength * tight;
-    [line appendFormat:@" | shade tight=%.2f under@R=%.2f @1.5R=%.2f @2R=%.2f @3R=%.2f castWidth=%.0f cast@0=%.2f @0.5w=%.2f @w=%.2f bendMax=%.2f crest=%.2f",
-     tight,
-     ahead * (1 - RNCPageCurlSmoothstep(t.aheadNear * R, t.aheadFar * R, R)),
-     ahead * (1 - RNCPageCurlSmoothstep(t.aheadNear * R, t.aheadFar * R, 1.5 * R)),
-     ahead * (1 - RNCPageCurlSmoothstep(t.aheadNear * R, t.aheadFar * R, 2 * R)),
-     ahead * (1 - RNCPageCurlSmoothstep(t.aheadNear * R, t.aheadFar * R, 3 * R)),
-     castWidth,
-     castStrength * (1 - RNCPageCurlSmoothstep(castStart, castWidth, 0)),
-     castStrength * (1 - RNCPageCurlSmoothstep(castStart, castWidth, 0.5 * castWidth)),
-     castStrength * (1 - RNCPageCurlSmoothstep(castStart, castWidth, castWidth)),
-     a * t.bendDarken * _curlBendStrength * tight,
-     (double)u.highlightColor.w * tight];
-    NSUInteger index = 0;
-    for (RNCPageCurlPage *page in _underPages) {
-      [line appendFormat:@" under%lu=%@%@", (unsigned long)index, NSStringFromCGRect(page.rect), page.texture ? @"" : @"(paper)"];
-      index += 1;
-    }
-  }
-  return line;
-}
-
 - (void)drawRect:(CGRect)rect
 {
-  if (_pipelineFailed || _sheetPipeline == nil) {
+  if (_pipelines.sheet == nil || _pipelines.under == nil) {
     return;
   }
-  NSLog(@"[page-curl] draw %@", [self curlDescription]);
+  RNCPageCurlUniforms base = [self baseUniforms];
+  RNCPageCurlFrameLog(@"[page-curl] draw S=%.0f,%.0f F=%.0f,%.0f R=%.1f axis=%.0f,%.0f n=%.2f,%.2f sheet=%@ mirrored=%d curling=%d under=%lu",
+                      _curlStart.x, _curlStart.y, _curlFinger.x, _curlFinger.y, base.radius, base.axisOrigin.x, base.axisOrigin.y, base.axisNormal.x,
+                      base.axisNormal.y, NSStringFromCGRect(_sheet.rect), _mirrored, _curling, (unsigned long)_underPages.count);
   id<CAMetalDrawable> drawable = self.currentDrawable;
   MTLRenderPassDescriptor *pass = self.currentRenderPassDescriptor;
   if (drawable == nil || pass == nil) {
@@ -562,13 +493,11 @@ static double RNCPageCurlSmoothstep(double e0, double e1, double x)
 
   id<MTLCommandBuffer> commands = [_queue commandBuffer];
   id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-  [encoder setDepthStencilState:_depthState];
+  [encoder setDepthStencilState:_pipelines.depth];
   [encoder setCullMode:MTLCullModeNone];
-  [encoder setFragmentSamplerState:_sampler atIndex:0];
+  [encoder setFragmentSamplerState:_pipelines.sampler atIndex:0];
 
-  RNCPageCurlUniforms base = [self baseUniforms];
-
-  [encoder setRenderPipelineState:_underPipeline];
+  [encoder setRenderPipelineState:_pipelines.under];
   [encoder setVertexBuffer:_quadVertices offset:0 atIndex:0];
   for (RNCPageCurlPage *page in _underPages) {
     RNCPageCurlUniforms u = base;
@@ -590,7 +519,7 @@ static double RNCPageCurlSmoothstep(double e0, double e1, double x)
     u.backTexRect = RNCPageCurlRectFloat4(_sheetBackTexRect);
     u.hasFront = _sheet.texture != nil ? 1 : 0;
     u.hasBack = _sheetBackTexture != nil ? 1 : 0;
-    [encoder setRenderPipelineState:_sheetPipeline];
+    [encoder setRenderPipelineState:_pipelines.sheet];
     // mirroring flips the winding, so the front face would read as the back
     [encoder setFrontFacingWinding:_mirrored ? MTLWindingCounterClockwise : MTLWindingClockwise];
     [encoder setVertexBuffer:_gridVertices offset:0 atIndex:0];
