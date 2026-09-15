@@ -153,6 +153,8 @@ RCTAutoInsetsProtocol>
   BOOL _savedStatusBarHidden;
 #if !TARGET_OS_OSX
   RNCWebViewPageCurl *_pageCurl;
+  // Lives inside the webview's scroll view, so UIKit moves it with the content
+  UIView *_pageBordersOverlay;
 #endif // !TARGET_OS_OSX
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000 /* __IPHONE_11_0 */
@@ -950,11 +952,40 @@ RCTAutoInsetsProtocol>
   NSArray *pages = borders[@"pages"];
   NSLog(@"[pageBorders] pageHeight=%@ pages=%lu contentOffsetY=%.1f",
         borders[@"pageHeight"], (unsigned long)pages.count, _webView.scrollView.contentOffset.y);
-  for (NSDictionary *page in pages) {
-    NSLog(@"[pageBorders] chunk=%@ page=%@ top=%@ bottom=%@",
-          page[@"chunkIndex"], page[@"pageIndex"], page[@"top"], page[@"bottom"]);
-  }
+#if !TARGET_OS_OSX
+  [self paintPageBorders:pages];
+#endif
 }
+
+#if !TARGET_OS_OSX
+- (void)paintPageBorders:(NSArray *)pages
+{
+  UIScrollView *scrollView = _webView.scrollView;
+  if (_pageBordersOverlay == nil || _pageBordersOverlay.superview != scrollView) {
+    [_pageBordersOverlay removeFromSuperview];
+    _pageBordersOverlay = [[UIView alloc] initWithFrame:CGRectZero];
+    _pageBordersOverlay.userInteractionEnabled = NO;
+    [scrollView addSubview:_pageBordersOverlay];
+  }
+  [scrollView bringSubviewToFront:_pageBordersOverlay];
+  for (UIView *old in [_pageBordersOverlay.subviews copy]) {
+    [old removeFromSuperview];
+  }
+  CGFloat width = scrollView.contentSize.width > 0 ? scrollView.contentSize.width : scrollView.bounds.size.width;
+  CGFloat maxBottom = 0;
+  for (NSDictionary *page in pages) {
+    CGFloat top = [page[@"top"] doubleValue];
+    CGFloat bottom = [page[@"bottom"] doubleValue];
+    maxBottom = MAX(maxBottom, bottom);
+    UIView *border = [[UIView alloc] initWithFrame:CGRectMake(0, top, width, bottom - top)];
+    border.userInteractionEnabled = NO;
+    border.layer.borderColor = [UIColor colorWithRed:1 green:0 blue:0 alpha:0.5].CGColor;
+    border.layer.borderWidth = 2;
+    [_pageBordersOverlay addSubview:border];
+  }
+  _pageBordersOverlay.frame = CGRectMake(0, 0, width, maxBottom);
+}
+#endif
 
 - (void)setSource:(NSDictionary *)source
 {
