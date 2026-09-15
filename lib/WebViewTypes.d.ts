@@ -1,5 +1,5 @@
 import { ReactElement, Component, ComponentProps } from 'react';
-import { NativeSyntheticEvent, ViewProps, StyleProp, ViewStyle, NativeMethodsMixin, UIManagerStatic, NativeScrollEvent } from 'react-native';
+import { ColorValue, NativeSyntheticEvent, ViewProps, StyleProp, ViewStyle, NativeMethodsMixin, UIManagerStatic, NativeScrollEvent } from 'react-native';
 import type NativeWebViewComponent from './RNCWebViewNativeComponent';
 type WebViewCommands = 'goForward' | 'goBack' | 'reload' | 'stopLoading' | 'postMessage' | 'injectJavaScript' | 'loadUrl' | 'requestFocus' | 'clearCache';
 type AndroidWebViewCommands = 'clearHistory' | 'clearFormData';
@@ -120,6 +120,12 @@ export type WebViewHttpErrorEvent = NativeSyntheticEvent<WebViewHttpError>;
 export type WebViewRenderProcessGoneEvent = NativeSyntheticEvent<WebViewRenderProcessGoneDetail>;
 export type WebViewOpenWindowEvent = NativeSyntheticEvent<WebViewOpenWindow>;
 export type WebViewNativeTouchEndEvent = NativeSyntheticEvent<WebViewNativeTouchEnd>;
+export interface WebViewPageCurl {
+    type: 'touch' | 'tap' | 'turn' | 'cancel' | 'edge' | 'settled' | 'ready';
+    direction: 'next' | 'previous' | '';
+    detail: string;
+}
+export type WebViewPageCurlEvent = NativeSyntheticEvent<WebViewPageCurl>;
 export type WebViewScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
 export type DataDetectorTypes = 'phoneNumber' | 'link' | 'address' | 'calendarEvent' | 'trackingNumber' | 'flightNumber' | 'lookupSuggestion' | 'none' | 'all';
 export type OverScrollModeType = 'always' | 'content' | 'never';
@@ -222,6 +228,7 @@ export interface CommonNativeWebViewProps extends ViewProps {
     onMessage: (event: WebViewMessageEvent) => void;
     onShouldStartLoadWithRequest: (event: ShouldStartLoadRequestEvent) => void;
     onNativeTouchEnd?: (event: WebViewNativeTouchEndEvent) => void;
+    onPageCurl?: (event: WebViewPageCurlEvent) => void;
     showsHorizontalScrollIndicator?: boolean;
     showsVerticalScrollIndicator?: boolean;
     paymentRequestEnabled?: boolean;
@@ -294,6 +301,11 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      * Does not store any data within the lifetime of the WebView.
      */
     incognito?: boolean;
+    /**
+     * Page-curl host events, for logging: touch, tap, turn, cancel, edge, settled, ready.
+     * @platform ios
+     */
+    onPageCurl?: (event: WebViewPageCurlEvent) => void;
     /**
      * Boolean value that determines whether the web view bounces
      * when it reaches the edge of the content. The default value is `true`.
@@ -673,6 +685,57 @@ export interface IOSWebViewProps extends WebViewSharedProps {
      * @platform ios
      */
     dragInteractionEnabled?: boolean;
+    /**
+     * Hosts a page-curl controller over the webview; page turns are driven natively and
+     * reported through `onPageCurl`.
+     * @platform ios
+     */
+    pageCurlEnabled?: boolean;
+    /**
+     * Where the curl hinges: `edge` curls the whole view as one sheet from the left edge
+     * (default), `middle` splits it into facing pages with the spine in the center.
+     * @platform ios
+     */
+    pageCurlSpine?: 'edge' | 'middle';
+    /**
+     * Color of the paper behind the baked pages, e.g. the reader's background. Defaults to
+     * the top-left pixel of the current page.
+     * @platform ios
+     */
+    pageCurlPaperColor?: ColorValue;
+    /**
+     * Color of the back of a curling sheet. Defaults to the paper faded toward the opposite
+     * extreme (lighter on dark paper, darker on light paper).
+     * @platform ios
+     */
+    pageCurlBackColor?: ColorValue;
+    /**
+     * Color and strength (0..1) of the curl's shadows: the shading of the bend and the shadow
+     * it casts on the pages around it. Default black at 0.35.
+     * @platform ios
+     */
+    pageCurlShadowColor?: ColorValue;
+    pageCurlShadowOpacity?: number;
+    /**
+     * Color and strength (0..1) of the glossy band along the fold. Default white at 0.2; 0
+     * removes it.
+     * @platform ios
+     */
+    pageCurlHighlightColor?: ColorValue;
+    pageCurlHighlightOpacity?: number;
+    /**
+     * Tuning knobs for the curl's shape, shading and completion timing, keyed as in
+     * RNCPageCurlTuningDefaults (apple/RNCWebViewPageCurl.m). Missing keys keep their
+     * defaults and unknown keys are ignored.
+     * @platform ios
+     */
+    pageCurlTuning?: Record<string, number>;
+    /**
+     * Logs every step of the curl (bakes, gestures, frames) to the console. Off by default;
+     * meant for development builds only.
+     * @platform ios
+     */
+    pageCurlDebugLogging?: boolean;
 }
 export interface MacOSWebViewProps extends WebViewSharedProps {
     /**
