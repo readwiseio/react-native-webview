@@ -972,18 +972,30 @@ RCTAutoInsetsProtocol>
     [old removeFromSuperview];
   }
   CGFloat width = scrollView.contentSize.width > 0 ? scrollView.contentSize.width : scrollView.bounds.size.width;
+  // A spacer is the gap between one page's bottom and the next page's top
+  CGFloat previousBottom = -1;
   CGFloat maxBottom = 0;
   for (NSDictionary *page in pages) {
     CGFloat top = [page[@"top"] doubleValue];
     CGFloat bottom = [page[@"bottom"] doubleValue];
+    if (previousBottom >= 0 && top > previousBottom) {
+      UIView *spacer = [[UIView alloc] initWithFrame:CGRectMake(0, previousBottom, width, top - previousBottom)];
+      spacer.userInteractionEnabled = NO;
+      spacer.backgroundColor = _pageBordersColor;
+      [_pageBordersOverlay addSubview:spacer];
+    }
+    previousBottom = bottom;
     maxBottom = MAX(maxBottom, bottom);
-    UIView *border = [[UIView alloc] initWithFrame:CGRectMake(0, top, width, bottom - top)];
-    border.userInteractionEnabled = NO;
-    border.layer.borderColor = [UIColor colorWithRed:1 green:0 blue:0 alpha:0.5].CGColor;
-    border.layer.borderWidth = 2;
-    [_pageBordersOverlay addSubview:border];
   }
   _pageBordersOverlay.frame = CGRectMake(0, 0, width, maxBottom);
+}
+
+- (void)setPageBordersColor:(UIColor *)pageBordersColor
+{
+  _pageBordersColor = pageBordersColor;
+  for (UIView *spacer in _pageBordersOverlay.subviews) {
+    spacer.backgroundColor = pageBordersColor;
+  }
 }
 #endif
 

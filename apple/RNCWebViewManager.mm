@@ -198,6 +198,7 @@ RCT_EXPORT_VIEW_PROPERTY(pageCurlTuning, NSString)
 RCT_CUSTOM_VIEW_PROPERTY(pageCurlDebugLogging, BOOL, RNCWebViewImpl) {
   view.pageCurlDebugLogging = json == nil ? false : [RCTConvert BOOL: json];
 }
+RCT_EXPORT_VIEW_PROPERTY(pageBordersColor, UIColor)
 RCT_CUSTOM_VIEW_PROPERTY(dragInteractionEnabled, BOOL, RNCWebViewImpl) {
   view.dragInteractionEnabled = json == nil ? true : [RCTConvert BOOL: json];
 }
