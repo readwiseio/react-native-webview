@@ -21,6 +21,7 @@
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
+static NSString *const PageBordersMessageHandlerName = @"pageBorders";
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
 
@@ -493,6 +494,8 @@ RCTAutoInsetsProtocol>
   // Shim the HTML5 history API:
   [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
                                                             name:HistoryShimName];
+  [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
+                                                            name:PageBordersMessageHandlerName];
   [self resetupScripts:wkWebViewConfig];
 
   if(@available(macos 10.11, ios 9.0, *)) {
@@ -625,6 +628,7 @@ RCTAutoInsetsProtocol>
   if (_webView) {
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:PageBordersMessageHandlerName];
     [_webView removeObserver:self forKeyPath:@"estimatedProgress"];
     [_webView removeFromSuperview];
     if (@available(iOS 15.0, macOS 12.0, *)) {
@@ -802,6 +806,25 @@ RCTAutoInsetsProtocol>
       [event addEntriesFromDictionary: @{@"url": message.frameInfo.request.URL.absoluteString}];
       _onMessage(event);
     }
+  } else if ([message.name isEqualToString:PageBordersMessageHandlerName]) {
+    [self didReceivePageBorders:message.body];
+  }
+}
+
+// Page borders in document coordinates; the webview's contentOffset.y maps them to the screen
+- (void)didReceivePageBorders:(id)body
+{
+  if (![body isKindOfClass:[NSDictionary class]]) {
+    NSLog(@"[pageBorders] unexpected body %@", body);
+    return;
+  }
+  NSDictionary *borders = (NSDictionary *)body;
+  NSArray *pages = borders[@"pages"];
+  NSLog(@"[pageBorders] pageHeight=%@ pages=%lu contentOffsetY=%.1f",
+        borders[@"pageHeight"], (unsigned long)pages.count, _webView.scrollView.contentOffset.y);
+  for (NSDictionary *page in pages) {
+    NSLog(@"[pageBorders] chunk=%@ page=%@ top=%@ bottom=%@",
+          page[@"chunkIndex"], page[@"pageIndex"], page[@"top"], page[@"bottom"]);
   }
 }
 
