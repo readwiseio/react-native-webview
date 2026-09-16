@@ -949,10 +949,13 @@ RCTAutoInsetsProtocol>
 // the page can only reach the painter while a color is set
 - (void)pageSpacersSetEnabled:(BOOL)enabled
 {
-  if (_webView == nil || enabled == (_pageSpacersOverlay != nil)) {
+  if (enabled == (_pageSpacersOverlay != nil)) {
     return;
   }
   if (enabled) {
+    if (_webView == nil) {
+      return;
+    }
     [_webView.configuration.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
                                                                      name:PageSpacersMessageHandlerName];
     _pageSpacersOverlay = [[UIView alloc] initWithFrame:CGRectZero];
@@ -969,34 +972,53 @@ RCTAutoInsetsProtocol>
 {
   _pageSpacersColor = pageSpacersColor;
   [self pageSpacersSetEnabled:pageSpacersColor != nil];
-  for (UIView *spacer in _pageSpacersOverlay.subviews) {
-    spacer.backgroundColor = pageSpacersColor;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  for (CALayer *spacer in _pageSpacersOverlay.layer.sublayers) {
+    spacer.backgroundColor = pageSpacersColor.CGColor;
   }
+  [CATransaction commit];
 }
 
 - (void)setPageSpacersVerticalStartOffset:(CGFloat)pageSpacersVerticalStartOffset
 {
   CGFloat delta = pageSpacersVerticalStartOffset - _pageSpacersVerticalStartOffset;
   _pageSpacersVerticalStartOffset = pageSpacersVerticalStartOffset;
-  for (UIView *spacer in _pageSpacersOverlay.subviews) {
-    spacer.frame = CGRectMake(0, CGRectGetMinY(spacer.frame) + delta, CGRectGetWidth(spacer.frame), CGRectGetHeight(spacer.frame) - delta);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  for (CALayer *spacer in _pageSpacersOverlay.layer.sublayers) {
+    spacer.frame = CGRectMake(0, CGRectGetMinY(spacer.frame) + delta, CGRectGetWidth(spacer.frame), MAX(0, CGRectGetHeight(spacer.frame) - delta));
   }
+  [CATransaction commit];
+}
+
+- (void)setPageSpacersVerticalEndOffset:(CGFloat)pageSpacersVerticalEndOffset
+{
+  CGFloat delta = pageSpacersVerticalEndOffset - _pageSpacersVerticalEndOffset;
+  _pageSpacersVerticalEndOffset = pageSpacersVerticalEndOffset;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  for (CALayer *spacer in _pageSpacersOverlay.layer.sublayers) {
+    spacer.frame = CGRectMake(0, CGRectGetMinY(spacer.frame), CGRectGetWidth(spacer.frame), MAX(0, CGRectGetHeight(spacer.frame) - delta));
+  }
+  [CATransaction commit];
 }
 
 - (void)clearPageSpacers
 {
-  for (UIView *spacer in [_pageSpacersOverlay.subviews copy]) {
-    [spacer removeFromSuperview];
-  }
+  _pageSpacersOverlay.layer.sublayers = nil;
   _pageSpacersOverlay.frame = CGRectZero;
 }
 
-// One full-width view per spacer, in document coordinates; each message replaces the last set
+// One full-width layer per spacer, in document coordinates; each message replaces the last set
 - (void)paintPageSpacers:(id)body
 {
   NSArray *spacers = [body isKindOfClass:[NSDictionary class]] ? body[@"spacers"] : nil;
-  if (_pageSpacersOverlay == nil || ![spacers isKindOfClass:[NSArray class]]) {
+  if (![spacers isKindOfClass:[NSArray class]]) {
     RCTLogWarn(@"[pageSpacers] ignored a malformed message: %@", body);
+    return;
+  }
+  if (_pageSpacersOverlay == nil) {
     return;
   }
   CFTimeInterval paintStart = CACurrentMediaTime();
@@ -1008,31 +1030,35 @@ RCTAutoInsetsProtocol>
   CGFloat width = MAX(scrollView.contentSize.width, scrollView.bounds.size.width);
   CGFloat maxBottom = 0;
   NSUInteger painted = 0;
-  NSArray<UIView *> *spacerViews = _pageSpacersOverlay.subviews;
+  NSArray<CALayer *> *spacerLayers = _pageSpacersOverlay.layer.sublayers ?: @[];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
   for (id spacer in spacers) {
     id top = [spacer isKindOfClass:[NSDictionary class]] ? spacer[@"top"] : nil;
     id height = [spacer isKindOfClass:[NSDictionary class]] ? spacer[@"height"] : nil;
     if (![top isKindOfClass:[NSNumber class]] || ![height isKindOfClass:[NSNumber class]]) {
       continue;
     }
-    UIView *spacerView;
-    if (painted < spacerViews.count) {
-      spacerView = spacerViews[painted];
+    CALayer *spacerLayer;
+    if (painted < spacerLayers.count) {
+      spacerLayer = spacerLayers[painted];
     } else {
-      spacerView = [[UIView alloc] initWithFrame:CGRectZero];
-      spacerView.userInteractionEnabled = NO;
-      [_pageSpacersOverlay addSubview:spacerView];
+      spacerLayer = [CALayer layer];
+      [_pageSpacersOverlay.layer addSublayer:spacerLayer];
     }
-    spacerView.frame = CGRectMake(0, [top doubleValue] + _pageSpacersVerticalStartOffset, width, MAX(0, [height doubleValue] - _pageSpacersVerticalStartOffset));
-    spacerView.backgroundColor = _pageSpacersColor;
-    maxBottom = MAX(maxBottom, CGRectGetMaxY(spacerView.frame));
+    spacerLayer.frame = CGRectMake(0, [top doubleValue] + _pageSpacersVerticalStartOffset, width, MAX(0, [height doubleValue] - _pageSpacersVerticalStartOffset - _pageSpacersVerticalEndOffset));
+    spacerLayer.backgroundColor = _pageSpacersColor.CGColor;
+    maxBottom = MAX(maxBottom, CGRectGetMaxY(spacerLayer.frame));
     painted++;
   }
-  for (NSUInteger i = painted; i < spacerViews.count; i++) {
-    [spacerViews[i] removeFromSuperview];
+  for (NSUInteger i = painted; i < spacerLayers.count; i++) {
+    [spacerLayers[i] removeFromSuperlayer];
   }
   _pageSpacersOverlay.frame = CGRectMake(0, 0, width, maxBottom);
-  RCTLogInfo(@"[pageSpacers] painted %lu of %lu in %.1fms", (unsigned long)painted, (unsigned long)spacers.count, (CACurrentMediaTime() - paintStart) * 1000);
+  [CATransaction commit];
+  if (_pageSpacersDebugLogging) {
+    RCTLogInfo(@"[pageSpacers] painted %lu of %lu in %.1fms", (unsigned long)painted, (unsigned long)spacers.count, (CACurrentMediaTime() - paintStart) * 1000);
+  }
 }
 #endif
 

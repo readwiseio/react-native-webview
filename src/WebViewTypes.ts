@@ -922,9 +922,11 @@ export interface IOSWebViewProps extends WebViewSharedProps {
   pageCurlDebugLogging?: boolean;
 
   /**
-   * Fill color for the page spacers the content posts to the `pageSpacers` message
-   * handler, painted natively inside the webview's scroll view. The handler is only
-   * registered while a color is set.
+   * Fill color for the page spacers the content reports, painted natively inside the
+   * webview's scroll view. While a color is set the page can post
+   * `window.webkit.messageHandlers.pageSpacers.postMessage({ spacers: [{ top, height }] })`
+   * with each rect in CSS pixels from the top of the document; each post replaces the
+   * last. Unset, the handler does not exist and nothing is painted.
    * @platform ios
    */
   pageSpacersColor?: ColorValue;
@@ -935,6 +937,19 @@ export interface IOSWebViewProps extends WebViewSharedProps {
    * @platform ios
    */
   pageSpacersVerticalStartOffset?: number;
+
+  /**
+   * Points to move each spacer's bottom edge up by, taken off its height so the
+   * top edge stays put. Leaves room below a page for highlight outlines.
+   * @platform ios
+   */
+  pageSpacersVerticalEndOffset?: number;
+
+  /**
+   * Logs the count and paint time of every spacers message. Off by default.
+   * @platform ios
+   */
+  pageSpacersDebugLogging?: boolean;
 }
 
 export interface MacOSWebViewProps extends WebViewSharedProps {

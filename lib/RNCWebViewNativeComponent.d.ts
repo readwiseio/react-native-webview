@@ -195,6 +195,8 @@ export interface NativeProps extends ViewProps {
     pageCurlDebugLogging?: boolean;
     pageSpacersColor?: ColorValue;
     pageSpacersVerticalStartOffset?: WithDefault<Double, 0>;
+    pageSpacersVerticalEndOffset?: WithDefault<Double, 0>;
+    pageSpacersDebugLogging?: boolean;
     textInteractionEnabled?: WithDefault<boolean, true>;
     useSharedProcessPool?: WithDefault<boolean, true>;
     onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;

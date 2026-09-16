@@ -353,6 +353,10 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     if (oldViewProps.pageSpacersVerticalStartOffset != newViewProps.pageSpacersVerticalStartOffset) {
         _view.pageSpacersVerticalStartOffset = newViewProps.pageSpacersVerticalStartOffset;
     }
+    if (oldViewProps.pageSpacersVerticalEndOffset != newViewProps.pageSpacersVerticalEndOffset) {
+        _view.pageSpacersVerticalEndOffset = newViewProps.pageSpacersVerticalEndOffset;
+    }
+    _view.pageSpacersDebugLogging = newViewProps.pageSpacersDebugLogging;
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)
