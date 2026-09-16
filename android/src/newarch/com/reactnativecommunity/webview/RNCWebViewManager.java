@@ -473,7 +473,7 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
     public void setPageCurlDebugLogging(RNCWebViewWrapper view, boolean value) {}
 
     @Override
-    public void setPageBordersColor(RNCWebViewWrapper view, @Nullable Integer value) {}
+    public void setPageSpacersColor(RNCWebViewWrapper view, @Nullable Integer value) {}
     /* !iOS PROPS - no implemented here */
 
     @Override

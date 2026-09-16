@@ -922,11 +922,12 @@ export interface IOSWebViewProps extends WebViewSharedProps {
   pageCurlDebugLogging?: boolean;
 
   /**
-   * Fill color for the gaps between paginated pages, painted natively inside the
-   * webview's scroll view. Unset paints nothing.
+   * Fill color for the page spacers the content posts to the `pageSpacers` message
+   * handler, painted natively inside the webview's scroll view. The handler is only
+   * registered while a color is set.
    * @platform ios
    */
-  pageBordersColor?: ColorValue;
+  pageSpacersColor?: ColorValue;
 }
 
 export interface MacOSWebViewProps extends WebViewSharedProps {

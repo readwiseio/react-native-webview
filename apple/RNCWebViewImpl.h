@@ -129,7 +129,7 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, strong) NSNumber * _Nullable pageCurlHighlightOpacity;
 @property (nonatomic, copy) NSString * _Nullable pageCurlTuning;
 @property (nonatomic, assign) BOOL pageCurlDebugLogging;
-@property (nonatomic, strong) UIColor * _Nullable pageBordersColor;
+@property (nonatomic, strong) UIColor * _Nullable pageSpacersColor;
 #if !TARGET_OS_OSX
 @property (nonatomic, assign) WKDataDetectorTypes dataDetectorTypes;
 @property (nonatomic, weak) UIRefreshControl * _Nullable refreshControl;
