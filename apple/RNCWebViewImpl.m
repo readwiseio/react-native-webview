@@ -1023,7 +1023,7 @@ RCTAutoInsetsProtocol>
       spacerView.userInteractionEnabled = NO;
       [_pageSpacersOverlay addSubview:spacerView];
     }
-    spacerView.frame = CGRectMake(0, [top doubleValue] + _pageSpacersVerticalStartOffset, width, [height doubleValue] - _pageSpacersVerticalStartOffset);
+    spacerView.frame = CGRectMake(0, [top doubleValue] + _pageSpacersVerticalStartOffset, width, MAX(0, [height doubleValue] - _pageSpacersVerticalStartOffset));
     spacerView.backgroundColor = _pageSpacersColor;
     maxBottom = MAX(maxBottom, CGRectGetMaxY(spacerView.frame));
     painted++;
