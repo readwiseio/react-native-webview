@@ -948,17 +948,17 @@ RCTAutoInsetsProtocol>
     NSLog(@"[pageBorders] unexpected body %@", body);
     return;
   }
-  NSDictionary *borders = (NSDictionary *)body;
-  NSArray *pages = borders[@"pages"];
-  NSLog(@"[pageBorders] pageHeight=%@ pages=%lu contentOffsetY=%.1f",
-        borders[@"pageHeight"], (unsigned long)pages.count, _webView.scrollView.contentOffset.y);
+  NSArray *spacers = ((NSDictionary *)body)[@"spacers"];
+  NSLog(@"[pageBorders] spacers=%lu contentOffsetY=%.1f", (unsigned long)spacers.count, _webView.scrollView.contentOffset.y);
 #if !TARGET_OS_OSX
-  [self paintPageBorders:pages];
+  CFTimeInterval paintStart = CACurrentMediaTime();
+  [self paintPageSpacers:spacers];
+  NSLog(@"[pageBorders] painted %lu spacers in %.1fms", (unsigned long)spacers.count, (CACurrentMediaTime() - paintStart) * 1000);
 #endif
 }
 
 #if !TARGET_OS_OSX
-- (void)paintPageBorders:(NSArray *)pages
+- (void)paintPageSpacers:(NSArray *)spacers
 {
   UIScrollView *scrollView = _webView.scrollView;
   if (_pageBordersOverlay == nil || _pageBordersOverlay.superview != scrollView) {
@@ -972,20 +972,15 @@ RCTAutoInsetsProtocol>
     [old removeFromSuperview];
   }
   CGFloat width = scrollView.contentSize.width > 0 ? scrollView.contentSize.width : scrollView.bounds.size.width;
-  // A spacer is the gap between one page's bottom and the next page's top
-  CGFloat previousBottom = -1;
   CGFloat maxBottom = 0;
-  for (NSDictionary *page in pages) {
-    CGFloat top = [page[@"top"] doubleValue];
-    CGFloat bottom = [page[@"bottom"] doubleValue];
-    if (previousBottom >= 0 && top > previousBottom) {
-      UIView *spacer = [[UIView alloc] initWithFrame:CGRectMake(0, previousBottom, width, top - previousBottom)];
-      spacer.userInteractionEnabled = NO;
-      spacer.backgroundColor = _pageBordersColor;
-      [_pageBordersOverlay addSubview:spacer];
-    }
-    previousBottom = bottom;
-    maxBottom = MAX(maxBottom, bottom);
+  for (NSDictionary *spacer in spacers) {
+    CGFloat top = [spacer[@"top"] doubleValue];
+    CGFloat height = [spacer[@"height"] doubleValue];
+    UIView *spacerView = [[UIView alloc] initWithFrame:CGRectMake(0, top, width, height)];
+    spacerView.userInteractionEnabled = NO;
+    spacerView.backgroundColor = _pageBordersColor;
+    [_pageBordersOverlay addSubview:spacerView];
+    maxBottom = MAX(maxBottom, top + height);
   }
   _pageBordersOverlay.frame = CGRectMake(0, 0, width, maxBottom);
 }
