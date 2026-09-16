@@ -350,6 +350,9 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     REMAP_WEBVIEW_STRING_PROP(pageCurlTuning)
     _view.pageCurlDebugLogging = newViewProps.pageCurlDebugLogging;
     REMAP_WEBVIEW_COLOR_PROP(pageSpacersColor)
+    if (oldViewProps.pageSpacersVerticalStartOffset != newViewProps.pageSpacersVerticalStartOffset) {
+        _view.pageSpacersVerticalStartOffset = newViewProps.pageSpacersVerticalStartOffset;
+    }
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
     REMAP_WEBVIEW_PROP(automaticallyAdjustContentInsets)

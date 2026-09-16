@@ -928,6 +928,13 @@ export interface IOSWebViewProps extends WebViewSharedProps {
    * @platform ios
    */
   pageSpacersColor?: ColorValue;
+
+  /**
+   * Points to move each spacer's top edge down by, taken off its height so the
+   * bottom edge stays put. Leaves room above a page for highlight outlines.
+   * @platform ios
+   */
+  pageSpacersVerticalStartOffset?: number;
 }
 
 export interface MacOSWebViewProps extends WebViewSharedProps {

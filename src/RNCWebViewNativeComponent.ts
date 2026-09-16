@@ -265,6 +265,7 @@ export interface NativeProps extends ViewProps {
   pageCurlDebugLogging?: boolean;
   // iOS only (Readwise custom): fill color for the page spacers the content reports
   pageSpacersColor?: ColorValue;
+  pageSpacersVerticalStartOffset?: WithDefault<Double, 0>;
   textInteractionEnabled?: WithDefault<boolean, true>;
   useSharedProcessPool?: WithDefault<boolean, true>;
   onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;

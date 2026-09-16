@@ -659,8 +659,8 @@ RCTAutoInsetsProtocol>
     // this host may be recycled for an unrelated webview; the curl comes back only if its props ask
     [self pageCurlSetEnabled:NO];
     _pageCurlEnabled = NO;
+    // a recycled host keeps its old props, so the color must survive for the next setUp
     [self pageSpacersSetEnabled:NO];
-    _pageSpacersColor = nil;
 #endif // !TARGET_OS_OSX
     _webView = nil;
     if (_onContentProcessDidTerminate) {
@@ -974,6 +974,15 @@ RCTAutoInsetsProtocol>
   }
 }
 
+- (void)setPageSpacersVerticalStartOffset:(CGFloat)pageSpacersVerticalStartOffset
+{
+  CGFloat delta = pageSpacersVerticalStartOffset - _pageSpacersVerticalStartOffset;
+  _pageSpacersVerticalStartOffset = pageSpacersVerticalStartOffset;
+  for (UIView *spacer in _pageSpacersOverlay.subviews) {
+    spacer.frame = CGRectMake(0, CGRectGetMinY(spacer.frame) + delta, CGRectGetWidth(spacer.frame), CGRectGetHeight(spacer.frame) - delta);
+  }
+}
+
 - (void)clearPageSpacers
 {
   for (UIView *spacer in [_pageSpacersOverlay.subviews copy]) {
@@ -1014,7 +1023,7 @@ RCTAutoInsetsProtocol>
       spacerView.userInteractionEnabled = NO;
       [_pageSpacersOverlay addSubview:spacerView];
     }
-    spacerView.frame = CGRectMake(0, [top doubleValue], width, [height doubleValue]);
+    spacerView.frame = CGRectMake(0, [top doubleValue] + _pageSpacersVerticalStartOffset, width, [height doubleValue] - _pageSpacersVerticalStartOffset);
     spacerView.backgroundColor = _pageSpacersColor;
     maxBottom = MAX(maxBottom, CGRectGetMaxY(spacerView.frame));
     painted++;

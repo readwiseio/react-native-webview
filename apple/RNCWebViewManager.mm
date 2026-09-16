@@ -199,6 +199,7 @@ RCT_CUSTOM_VIEW_PROPERTY(pageCurlDebugLogging, BOOL, RNCWebViewImpl) {
   view.pageCurlDebugLogging = json == nil ? false : [RCTConvert BOOL: json];
 }
 RCT_EXPORT_VIEW_PROPERTY(pageSpacersColor, UIColor)
+RCT_EXPORT_VIEW_PROPERTY(pageSpacersVerticalStartOffset, CGFloat)
 RCT_CUSTOM_VIEW_PROPERTY(dragInteractionEnabled, BOOL, RNCWebViewImpl) {
   view.dragInteractionEnabled = json == nil ? true : [RCTConvert BOOL: json];
 }
