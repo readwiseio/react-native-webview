@@ -349,7 +349,8 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
     }
     REMAP_WEBVIEW_STRING_PROP(pageCurlTuning)
     _view.pageCurlDebugLogging = newViewProps.pageCurlDebugLogging;
-    REMAP_WEBVIEW_COLOR_PROP(pageSpacersColor)
+    // set on every update, like pageCurlEnabled: a recycled host still carries the previous element's props
+    _view.pageSpacersColor = RCTUIColorFromSharedColor(newViewProps.pageSpacersColor);
     if (oldViewProps.pageSpacersVerticalStartOffset != newViewProps.pageSpacersVerticalStartOffset) {
         _view.pageSpacersVerticalStartOffset = newViewProps.pageSpacersVerticalStartOffset;
     }
