@@ -471,6 +471,18 @@ public class RNCWebViewManager extends ViewGroupManager<RNCWebViewWrapper>
 
     @Override
     public void setPageCurlDebugLogging(RNCWebViewWrapper view, boolean value) {}
+
+    @Override
+    public void setPageSpacersColor(RNCWebViewWrapper view, @Nullable Integer value) {}
+
+    @Override
+    public void setPageSpacersVerticalStartOffset(RNCWebViewWrapper view, double value) {}
+
+    @Override
+    public void setPageSpacersVerticalEndOffset(RNCWebViewWrapper view, double value) {}
+
+    @Override
+    public void setPageSpacersDebugLogging(RNCWebViewWrapper view, boolean value) {}
     /* !iOS PROPS - no implemented here */
 
     @Override

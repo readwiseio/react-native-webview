@@ -24,6 +24,7 @@
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
+static NSString *const PageSpacersMessageHandlerName = @"pageSpacers";
 static NSString *const PageCurlMessageHandlerName = @"pageCurl";
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
@@ -152,6 +153,9 @@ RCTAutoInsetsProtocol>
   BOOL _savedStatusBarHidden;
 #if !TARGET_OS_OSX
   RNCWebViewPageCurl *_pageCurl;
+  // Lives inside the webview's scroll view, so UIKit moves it with the content
+  UIView *_pageSpacersOverlay;
+  NSArray<NSDictionary *> *_pageSpacers;
 #endif // !TARGET_OS_OSX
 
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000 /* __IPHONE_11_0 */
@@ -592,6 +596,9 @@ RCTAutoInsetsProtocol>
     if (_pageCurlEnabled) {
       [self pageCurlSetEnabled:YES];
     }
+    if (_pageSpacersColor != nil) {
+      [self pageSpacersSetEnabled:YES];
+    }
 #endif
     [self setHideKeyboardAccessoryView: _savedHideKeyboardAccessoryView];
     [self setKeyboardDisplayRequiresUserAction: _savedKeyboardDisplayRequiresUserAction];
@@ -653,6 +660,9 @@ RCTAutoInsetsProtocol>
     // this host may be recycled for an unrelated webview; the curl comes back only if its props ask
     [self pageCurlSetEnabled:NO];
     _pageCurlEnabled = NO;
+    [self pageSpacersSetEnabled:NO];
+    _pageSpacersColor = nil;
+    _pageSpacers = nil;
 #endif // !TARGET_OS_OSX
     _webView = nil;
     if (_onContentProcessDidTerminate) {
@@ -922,6 +932,10 @@ RCTAutoInsetsProtocol>
       [event addEntriesFromDictionary: @{@"url": message.frameInfo.request.URL.absoluteString}];
       _onMessage(event);
     }
+  } else if ([message.name isEqualToString:PageSpacersMessageHandlerName]) {
+#if !TARGET_OS_OSX
+    [self paintPageSpacers:message.body];
+#endif
   } else if ([message.name isEqualToString:PageCurlMessageHandlerName]) {
 #if !TARGET_OS_OSX
     if ([message.body isKindOfClass:[NSDictionary class]]) {
@@ -932,6 +946,114 @@ RCTAutoInsetsProtocol>
 #endif
   }
 }
+
+#if !TARGET_OS_OSX
+// the page can only reach the painter while a color is set
+- (void)pageSpacersSetEnabled:(BOOL)enabled
+{
+  if (enabled == (_pageSpacersOverlay != nil)) {
+    return;
+  }
+  if (enabled) {
+    if (_webView == nil) {
+      return;
+    }
+    [_webView.configuration.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
+                                                                     name:PageSpacersMessageHandlerName];
+    _pageSpacersOverlay = [[UIView alloc] initWithFrame:CGRectZero];
+    _pageSpacersOverlay.userInteractionEnabled = NO;
+    [_webView.scrollView addSubview:_pageSpacersOverlay];
+  } else {
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:PageSpacersMessageHandlerName];
+    [_pageSpacersOverlay removeFromSuperview];
+    _pageSpacersOverlay = nil;
+  }
+}
+
+- (void)setPageSpacersColor:(UIColor *)pageSpacersColor
+{
+  _pageSpacersColor = pageSpacersColor;
+  [self pageSpacersSetEnabled:pageSpacersColor != nil];
+  [self layoutPageSpacers];
+}
+
+- (void)setPageSpacersVerticalStartOffset:(CGFloat)pageSpacersVerticalStartOffset
+{
+  _pageSpacersVerticalStartOffset = pageSpacersVerticalStartOffset;
+  [self layoutPageSpacers];
+}
+
+- (void)setPageSpacersVerticalEndOffset:(CGFloat)pageSpacersVerticalEndOffset
+{
+  _pageSpacersVerticalEndOffset = pageSpacersVerticalEndOffset;
+  [self layoutPageSpacers];
+}
+
+- (void)clearPageSpacers
+{
+  _pageSpacers = nil;
+  [self layoutPageSpacers];
+}
+
+// Keeps the last well-formed message so a prop change can lay the same spacers out again
+- (void)paintPageSpacers:(id)body
+{
+  NSArray *spacers = [body isKindOfClass:[NSDictionary class]] ? body[@"spacers"] : nil;
+  if (![spacers isKindOfClass:[NSArray class]]) {
+    RCTLogWarn(@"[pageSpacers] ignored a malformed message: %@", body);
+    return;
+  }
+  NSMutableArray<NSDictionary *> *valid = [NSMutableArray arrayWithCapacity:spacers.count];
+  for (id spacer in spacers) {
+    if ([spacer isKindOfClass:[NSDictionary class]] && [spacer[@"top"] isKindOfClass:[NSNumber class]] && [spacer[@"height"] isKindOfClass:[NSNumber class]]) {
+      [valid addObject:spacer];
+    }
+  }
+  _pageSpacers = valid;
+  CFTimeInterval paintStart = CACurrentMediaTime();
+  [self layoutPageSpacers];
+  if (_pageSpacersDebugLogging) {
+    RCTLogInfo(@"[pageSpacers] painted %lu of %lu in %.1fms", (unsigned long)valid.count, (unsigned long)spacers.count, (CACurrentMediaTime() - paintStart) * 1000);
+  }
+}
+
+// One full-width layer per spacer, in document coordinates, trimmed by the two offsets
+- (void)layoutPageSpacers
+{
+  if (_pageSpacersOverlay == nil) {
+    return;
+  }
+  UIScrollView *scrollView = _webView.scrollView;
+  if (_pageSpacersOverlay.superview != scrollView) {
+    [scrollView addSubview:_pageSpacersOverlay];
+  }
+  [scrollView bringSubviewToFront:_pageSpacersOverlay];
+  CGFloat width = MAX(scrollView.contentSize.width, scrollView.bounds.size.width);
+  CGFloat maxBottom = 0;
+  NSArray<CALayer *> *spacerLayers = _pageSpacersOverlay.layer.sublayers ?: @[];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  for (NSUInteger i = 0; i < _pageSpacers.count; i++) {
+    CALayer *spacerLayer;
+    if (i < spacerLayers.count) {
+      spacerLayer = spacerLayers[i];
+    } else {
+      spacerLayer = [CALayer layer];
+      [_pageSpacersOverlay.layer addSublayer:spacerLayer];
+    }
+    CGFloat top = [_pageSpacers[i][@"top"] doubleValue];
+    CGFloat height = [_pageSpacers[i][@"height"] doubleValue];
+    spacerLayer.frame = CGRectMake(0, top + _pageSpacersVerticalStartOffset, width, MAX(0, height - _pageSpacersVerticalStartOffset - _pageSpacersVerticalEndOffset));
+    spacerLayer.backgroundColor = _pageSpacersColor.CGColor;
+    maxBottom = MAX(maxBottom, CGRectGetMaxY(spacerLayer.frame));
+  }
+  for (NSUInteger i = _pageSpacers.count; i < spacerLayers.count; i++) {
+    [spacerLayers[i] removeFromSuperlayer];
+  }
+  _pageSpacersOverlay.frame = CGRectMake(0, 0, width, maxBottom);
+  [CATransaction commit];
+}
+#endif
 
 - (void)setSource:(NSDictionary *)source
 {
@@ -977,6 +1099,9 @@ RCTAutoInsetsProtocol>
 
 - (void)visitSource
 {
+#if !TARGET_OS_OSX
+  [self clearPageSpacers];
+#endif
   // Check for a static html source first
   NSString *html = [RCTConvert NSString:_source[@"html"]];
   if (html) {
