@@ -558,7 +558,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   RNCPageCurlLog(@"[page-curl] rebake requested (%@) state=%@", reason, RNCPageCurlStateName(_state));
   [self awaitSettleIfResting:reason];
-  [self callBridge:@"invalidate" argument:nil completion:^(BOOL ok, id result) {}];
+  [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL ok, id result) {}];
 }
 
 // the manager is about to move the page: a controller resting on it waits for the settle
@@ -783,8 +783,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }];
 }
 
-// window.nativePageCurl.<fn>(page) in the content frame; jump resolves once the page painted,
-// scrollToPage once the manager has queued the move, and its settle follows
+// window.s.<fn>(argument) in the content frame: the manager's own methods. A jump resolves once the
+// page painted; a landing resolves once the manager has queued the move, and its settle follows
 - (void)callBridge:(NSString *)fn page:(NSInteger)page completion:(void (^)(BOOL ok))completion
 {
   [self callBridge:fn argument:@(page) completion:^(BOOL ok, id result) {
@@ -801,8 +801,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   NSString *body = [NSString stringWithFormat:
-      @"if (!window.nativePageCurl) { throw new Error('nativePageCurl bridge missing'); }"
-       "return await window.nativePageCurl.%@(argument);", fn];
+      @"if (!window.s || !window.s.%@) { throw new Error('scrolling manager has no %@'); }"
+       "return await window.s.%@(argument);", fn, fn, fn];
   CFTimeInterval start = CACurrentMediaTime();
   [webView callAsyncJavaScript:body
                      arguments:@{@"argument": argument ?: [NSNull null]}
@@ -892,7 +892,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL exists = next ? page < _lastPage : page > 0;
   BOOL beyondChunk = next ? !_isLastChunk : _chunkIndex > 0;
   if (exists) {
-    [steps addObject:[self stepBridge:@"jump" page:neighbor]];
+    [steps addObject:[self stepBridge:@"nativePageCurlJump" page:neighbor]];
     [steps addObject:[self stepSnapshot:direction]];
     return;
   }
@@ -905,7 +905,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   // peek, snapshot and unpeek are one step, so the manager is never left peeked between steps
   [steps addObject:^(void (^done)(BOOL)) {
-    [weakSelf callBridge:@"peek" argument:direction completion:^(BOOL ok, id result) {
+    [weakSelf callBridge:@"nativePageCurlPeek" argument:direction completion:^(BOOL ok, id result) {
       __strong __typeof(weakSelf) strongSelf = weakSelf;
       if (strongSelf == nil) {
         return;
@@ -921,7 +921,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
         if (!snapped && innerSelf != nil) {
           [innerSelf blankSlot:direction];
         }
-        [weakSelf callBridge:@"unpeek" argument:nil completion:^(BOOL unpeeked, id unpeekResult) {
+        [weakSelf callBridge:@"nativePageCurlUnpeek" argument:nil completion:^(BOOL unpeeked, id unpeekResult) {
           done(unpeeked);
         }];
       }];
@@ -947,7 +947,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
   // a relayout may have left the webview on another page
-  [steps addObject:[self stepBridge:@"jump" page:_page]];
+  [steps addObject:[self stepBridge:@"nativePageCurlJump" page:_page]];
   [steps addObject:[self stepSnapshot:RNCPageCurlSlotCurrent]];
   [steps addObject:[self stepBlock:^{
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -958,7 +958,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotNext to:steps];
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotPrevious to:steps];
   if (moved) {
-    [steps addObject:[self stepBridge:@"jump" page:_page]];
+    [steps addObject:[self stepBridge:@"nativePageCurlJump" page:_page]];
   }
   [self runSteps:steps index:0 teardownCount:teardownCount completion:^(BOOL ok) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -1346,20 +1346,20 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   [self emit:@"turn" direction:direction detail:[NSString stringWithFormat:@"from page %ld", (long)_page]];
-  // the cover shows the landed page; the manager is asked to move there like any other caller, and
-  // its settle bakes every slot again. A page past the chunk edge is the manager's own chunk switch
+  // the cover shows the landed page; the manager turns to it the way a margin tap does, and its
+  // settle bakes every slot again. Past the chunk edge that is the manager's own chunk switch
   [self rotateSlotsToward:direction];
   [self showCover];
-  NSInteger target = [direction isEqualToString:RNCPageCurlSlotNext] ? _page + 1 : _page - 1;
   // a settle from during the turn describes the page just left; the landing produces a fresh one
   _pendingSettle = nil;
   _awaitingLanding = YES;
   [self setState:RNCPageCurlStateAwaitingSettle reason:@"turn landed"];
-  RNCPageCurlLog(@"[page-curl] turn landed toward %@; scrollToPage %ld", direction, (long)target);
+  NSString *turn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
+  RNCPageCurlLog(@"[page-curl] turn landed toward %@; %@", direction, turn);
   __weak __typeof(self) weakSelf = self;
-  [self callBridge:@"scrollToPage" page:target completion:^(BOOL ok) {
+  [self callBridge:turn argument:nil completion:^(BOOL ok, id result) {
     if (!ok) {
-      [weakSelf requestRebake:@"scrollToPage failed"];
+      [weakSelf requestRebake:@"landing failed"];
     }
   }];
   // only the manager's settle leaves this state; say so if it has not come
@@ -1367,7 +1367,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
     __strong __typeof(weakSelf) strongSelf = weakSelf;
     if (strongSelf != nil && strongSelf->_stateSerial == serial) {
-      RNCPageCurlLog(@"[page-curl] no settle 3s after scrollToPage %ld; still awaiting it", (long)target);
+      RNCPageCurlLog(@"[page-curl] no settle 3s after landing toward %@; still awaiting it", direction);
     }
   });
 }
