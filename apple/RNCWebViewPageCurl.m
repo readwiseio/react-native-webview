@@ -52,7 +52,7 @@ typedef NS_ENUM(NSInteger, RNCPageCurlState) {
   // the manager is moving the page (a tap, a jump, or a landed curl's scrollToPage); its settle starts the bake
   RNCPageCurlStateAwaitingSettle,
   // a tap reached the webview; the manager answers with a settle (page turned) or touchEnd (nothing turned)
-  RNCPageCurlStateAwaitingTap,
+  RNCPageCurlStateAwaitingTapResult,
 };
 
 static NSString *RNCPageCurlStateName(RNCPageCurlState state)
@@ -62,7 +62,7 @@ static NSString *RNCPageCurlStateName(RNCPageCurlState state)
     case RNCPageCurlStateAnimating: return @"animating";
     case RNCPageCurlStateBaking: return @"baking";
     case RNCPageCurlStateAwaitingSettle: return @"awaitingSettle";
-    case RNCPageCurlStateAwaitingTap: return @"awaitingTap";
+    case RNCPageCurlStateAwaitingTapResult: return @"awaitingTapResult";
   }
   return @"?";
 }
@@ -206,9 +206,12 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   // UIKit hit-tests once, at touch-down; only a touch it delivered inside the webview is one the
   // manager saw and will answer
   BOOL _touchReachedWebView;
-  // bumped by teardown only, so a bake step still in flight from a torn-down controller stops
-  NSUInteger _epoch;
-  // the latest settle that arrived while a bake or turn was running; applied once the engine is free
+  // a bake step still in flight from a torn-down controller stops; setSpine tears down and re-enables,
+  // which _enabled alone cannot tell apart
+  NSUInteger _teardownCount;
+  // one per landed turn, so the settle watchdog knows which landing it is timing
+  NSUInteger _landingCount;
+  // the latest settle that arrived while a bake or turn was running; applied once the controller is free
   NSDictionary *_pendingSettle;
   // the page the webview rests on; pages count from 0 inside the chunk
   NSInteger _page;
@@ -472,7 +475,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     RNCPageCurlLog(@"[page-curl] touches ended; moved=%d state=%@ reachedWebView=%d", moved, RNCPageCurlStateName(strongSelf->_state),
                    strongSelf->_touchReachedWebView);
     if (!moved && strongSelf->_touchReachedWebView && strongSelf->_state == RNCPageCurlStateIdle) {
-      [strongSelf setState:RNCPageCurlStateAwaitingTap reason:@"tap"];
+      [strongSelf setState:RNCPageCurlStateAwaitingTapResult reason:@"tap"];
       [strongSelf emit:@"tap" direction:nil detail:nil];
     }
   };
@@ -487,7 +490,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
       RNCPageCurlLog(@"[page-curl] held still for 350ms; releasing the curl pan for this touch");
       strongSelf->_pan.enabled = NO;
       strongSelf->_pan.enabled = YES;
-      [strongSelf hideIfIdle];
     }
   };
   [host addGestureRecognizer:_touchObserver];
@@ -549,11 +551,11 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 }
 
 // bakes no longer match the page; the manager settles again once the page has painted. A busy
-// controller needs nothing: the settle the manager sends is kept and applied when the engine frees
+// controller needs nothing: the settle the manager sends is kept and applied when the controller frees
 - (void)requestRebake:(NSString *)reason
 {
   RNCPageCurlLog(@"[page-curl] rebake requested (%@) state=%@", reason, RNCPageCurlStateName(_state));
-  if (_state == RNCPageCurlStateIdle || _state == RNCPageCurlStateAwaitingTap) {
+  if (_state == RNCPageCurlStateIdle || _state == RNCPageCurlStateAwaitingTapResult) {
     _renderer.hidden = YES;
     [self setState:RNCPageCurlStateAwaitingSettle reason:reason];
   }
@@ -564,7 +566,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   RNCPageCurlLog(@"[page-curl] teardown");
   _enabled = NO;
-  _epoch += 1;
+  _teardownCount += 1;
   [self stopAnimation];
   if (_pan != nil) {
     [_pan.view removeGestureRecognizer:_pan];
@@ -746,7 +748,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   WKSnapshotConfiguration *config = [WKSnapshotConfiguration new];
   config.afterScreenUpdates = YES;
   CFTimeInterval start = CACurrentMediaTime();
-  NSUInteger epoch = _epoch;
+  NSUInteger teardownCount = _teardownCount;
   __weak __typeof(self) weakSelf = self;
   [webView takeSnapshotWithConfiguration:config completionHandler:^(UIImage *image, NSError *error) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -755,7 +757,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     }
     double ms = (CACurrentMediaTime() - start) * 1000.0;
     RNCPageCurlLog(@"[page-curl] snapshot slot=%@ took %.1fms image=%@ error=%@", slot, ms, NSStringFromCGSize(image.size), error);
-    if (epoch != strongSelf->_epoch) {
+    if (teardownCount != strongSelf->_teardownCount) {
       RNCPageCurlLog(@"[page-curl] snapshot slot=%@ dropped: the controller was torn down", slot);
       completion(NO);
       return;
@@ -844,9 +846,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 }
 
 // a bake runs every step to the end; only a teardown stops it, and then it stops without reporting
-- (void)runSteps:(NSArray<RNCPageCurlStep> *)steps index:(NSUInteger)index epoch:(NSUInteger)epoch completion:(void (^)(BOOL ok))completion
+- (void)runSteps:(NSArray<RNCPageCurlStep> *)steps index:(NSUInteger)index teardownCount:(NSUInteger)teardownCount completion:(void (^)(BOOL ok))completion
 {
-  if (!_enabled || epoch != _epoch) {
+  if (teardownCount != _teardownCount) {
     RNCPageCurlLog(@"[page-curl] bake stopped at step %lu: controller torn down", (unsigned long)index);
     return;
   }
@@ -860,7 +862,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     if (strongSelf == nil) {
       return;
     }
-    if (epoch != strongSelf->_epoch) {
+    if (teardownCount != strongSelf->_teardownCount) {
       RNCPageCurlLog(@"[page-curl] bake stopped after step %lu: controller torn down", (unsigned long)index);
       return;
     }
@@ -868,7 +870,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
       completion(NO);
       return;
     }
-    [strongSelf runSteps:steps index:index + 1 epoch:epoch completion:completion];
+    [strongSelf runSteps:steps index:index + 1 teardownCount:teardownCount completion:completion];
   });
 }
 
@@ -927,7 +929,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _chunkIndex = [settle[@"chunkIndex"] integerValue];
   _isLastChunk = [settle[@"isLastChunk"] boolValue];
   [self setState:RNCPageCurlStateBaking reason:@"settle"];
-  NSUInteger epoch = _epoch;
+  NSUInteger teardownCount = _teardownCount;
   CFTimeInterval start = CACurrentMediaTime();
   RNCPageCurlLog(@"[page-curl] bake start page=%ld/%ld chunk=%ld last=%d", (long)_page, (long)_lastPage, (long)_chunkIndex, _isLastChunk);
 
@@ -947,7 +949,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if (moved) {
     [steps addObject:[self stepBridge:@"jump" page:_page]];
   }
-  [self runSteps:steps index:0 epoch:epoch completion:^(BOOL ok) {
+  [self runSteps:steps index:0 teardownCount:teardownCount completion:^(BOOL ok) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
     if (strongSelf == nil) {
       return;
@@ -965,27 +967,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     [self runBakeWithSettle:_pendingSettle];
     return;
   }
-  _renderer.hidden = YES;
   [self setState:RNCPageCurlStateIdle reason:ok ? @"baked" : @"bake failed"];
-}
-
-// after a completed curl the cover already shows the landed page; the manager is asked to move
-// there like any other caller, and its settle bakes every slot again. A page past the chunk edge
-// makes the manager run its own chunk switch, which settles on its own
-- (void)finishTurnToward:(NSString *)direction
-{
-  BOOL next = [direction isEqualToString:RNCPageCurlSlotNext];
-  NSInteger target = next ? _page + 1 : _page - 1;
-  // a settle from during the turn describes the page just left; the landing produces a fresh one
-  _pendingSettle = nil;
-  [self setState:RNCPageCurlStateAwaitingSettle reason:@"turn landed"];
-  RNCPageCurlLog(@"[page-curl] turn landed toward %@; scrollToPage %ld", direction, (long)target);
-  __weak __typeof(self) weakSelf = self;
-  [self callBridge:@"scrollToPage" page:target completion:^(BOOL ok) {
-    if (!ok) {
-      [weakSelf requestRebake:@"scrollToPage failed"];
-    }
-  }];
 }
 
 #pragma mark - messages from the content frame
@@ -1009,14 +991,14 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   if ([type isEqualToString:@"unsettled"]) {
     // the manager is moving the page itself; the webview is the thing to show until it settles
-    if (_state == RNCPageCurlStateIdle || _state == RNCPageCurlStateAwaitingTap) {
+    if (_state == RNCPageCurlStateIdle || _state == RNCPageCurlStateAwaitingTapResult) {
       _renderer.hidden = YES;
       [self setState:RNCPageCurlStateAwaitingSettle reason:@"unsettled"];
     }
     return;
   }
   if ([type isEqualToString:@"touchEnd"]) {
-    if (_state == RNCPageCurlStateAwaitingTap) {
+    if (_state == RNCPageCurlStateAwaitingTapResult) {
       [self setState:RNCPageCurlStateIdle reason:@"tap turned no page"];
     }
     return;
@@ -1032,8 +1014,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     RNCPageCurlLog(@"[page-curl] %@ -> %@ (%@)", RNCPageCurlStateName(_state), RNCPageCurlStateName(state), reason);
   }
   _state = state;
+  // both overlays follow the state: idle is the webview, bare, with touches reaching it
   _inputBlocker.hidden = state == RNCPageCurlStateIdle;
   if (state == RNCPageCurlStateIdle) {
+    _renderer.hidden = YES;
     [self emit:@"ready" direction:nil detail:reason];
     [self beginTurnForPan];
   }
@@ -1042,13 +1026,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (BOOL)panActive
 {
   return _pan.state == UIGestureRecognizerStateBegan || _pan.state == UIGestureRecognizerStateChanged;
-}
-
-- (void)hideIfIdle
-{
-  if (_state == RNCPageCurlStateIdle && ![self panActive]) {
-    _renderer.hidden = YES;
-  }
 }
 
 #pragma mark - gestures
@@ -1102,7 +1079,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
         pan.state == UIGestureRecognizerStateFailed) {
       _turnDeclined = NO;
       RNCPageCurlLog(@"[page-curl] pan ended without a turn (state=%@)", RNCPageCurlStateName(_state));
-      [self hideIfIdle];
     }
     return;
   }
@@ -1339,14 +1315,33 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
       [self runBakeWithSettle:_pendingSettle];
       return;
     }
-    _renderer.hidden = YES;
-    [self setState:RNCPageCurlStateIdle reason:@"curl cancelled"];
+    [self setState:RNCPageCurlStateIdle reason:@"turn cancelled"];
     return;
   }
   [self emit:@"turn" direction:direction detail:[NSString stringWithFormat:@"from page %ld", (long)_page]];
+  // the cover shows the landed page; the manager is asked to move there like any other caller, and
+  // its settle bakes every slot again. A page past the chunk edge is the manager's own chunk switch
   [self rotateSlotsToward:direction];
   [self showCover];
-  [self finishTurnToward:direction];
+  NSInteger target = [direction isEqualToString:RNCPageCurlSlotNext] ? _page + 1 : _page - 1;
+  // a settle from during the turn describes the page just left; the landing produces a fresh one
+  _pendingSettle = nil;
+  [self setState:RNCPageCurlStateAwaitingSettle reason:@"turn landed"];
+  RNCPageCurlLog(@"[page-curl] turn landed toward %@; scrollToPage %ld", direction, (long)target);
+  __weak __typeof(self) weakSelf = self;
+  [self callBridge:@"scrollToPage" page:target completion:^(BOOL ok) {
+    if (!ok) {
+      [weakSelf requestRebake:@"scrollToPage failed"];
+    }
+  }];
+  // only the manager's settle leaves this state; say so if it has not come
+  NSUInteger landing = ++_landingCount;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (strongSelf != nil && strongSelf->_landingCount == landing && strongSelf->_state == RNCPageCurlStateAwaitingSettle) {
+      RNCPageCurlLog(@"[page-curl] no settle 3s after scrollToPage %ld; still awaiting it", (long)target);
+    }
+  });
 }
 
 @end
