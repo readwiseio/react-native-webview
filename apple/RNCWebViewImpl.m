@@ -1030,7 +1030,8 @@ RCTAutoInsetsProtocol>
   [scrollView bringSubviewToFront:_pageSpacersOverlay];
   CGFloat width = MAX(scrollView.contentSize.width, scrollView.bounds.size.width);
   CGFloat maxBottom = 0;
-  NSArray<CALayer *> *spacerLayers = _pageSpacersOverlay.layer.sublayers ?: @[];
+  // a copy: sublayers shrinks as the surplus layers below are removed
+  NSArray<CALayer *> *spacerLayers = [_pageSpacersOverlay.layer.sublayers copy] ?: @[];
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   for (NSUInteger i = 0; i < _pageSpacers.count; i++) {
