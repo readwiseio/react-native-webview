@@ -7,6 +7,7 @@ BOOL RNCPageCurlLoggingEnabled = NO;
 static NSString *const RNCPageCurlSlotCurrent = @"current";
 static NSString *const RNCPageCurlSlotPrevious = @"previous";
 static NSString *const RNCPageCurlSlotNext = @"next";
+static const NSUInteger RNCPageCurlMaxFailedBakes = 3;
 
 // defaults for the tuning JSON; the Bookwise side documents each knob
 static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
@@ -213,6 +214,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   NSUInteger _stateSerial;
   // the turn just landed and the manager was asked to move; a settle for the page it left is stale
   BOOL _awaitingLanding;
+  // bakes that failed back to back; past the cap the controller stops asking for another
+  NSUInteger _failedBakes;
   // the latest settle that arrived while a bake or turn was running; applied once the controller is free
   NSDictionary *_pendingSettle;
   // the page the webview rests on; pages count from 0 inside the chunk
@@ -561,7 +564,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL ok, id result) {}];
 }
 
-// the manager is about to move the page: a controller resting on it waits for the settle
+// the manager is about to move the page: a controller resting on it (idle, or waiting on a tap's
+// result) waits for the settle
 - (void)awaitSettleIfResting:(NSString *)reason
 {
   if (_state == RNCPageCurlStateIdle || _state == RNCPageCurlStateAwaitingTapResult) {
@@ -576,6 +580,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _teardownCount += 1;
   _stateSerial += 1;
   _awaitingLanding = NO;
+  _failedBakes = 0;
   [self stopAnimation];
   if (_pan != nil) {
     [_pan.view removeGestureRecognizer:_pan];
@@ -981,10 +986,12 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self setState:RNCPageCurlStateIdle reason:reason];
 }
 
-// a bake that stopped early leaves slots from another page: no direction curls until the next settle
+// a finished bake opens input; one that stopped early blanks its slots, which describe another page,
+// and asks the manager to settle again
 - (void)finishBake:(BOOL)ok
 {
   if (ok) {
+    _failedBakes = 0;
     [self bakePendingOrIdle:@"baked"];
     return;
   }
@@ -995,8 +1002,15 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     [self runBakeWithSettle:_pendingSettle];
     return;
   }
-  [self setState:RNCPageCurlStateIdle reason:@"bake failed"];
-  [self requestRebake:@"bake failed"];
+  _failedBakes += 1;
+  if (_failedBakes >= RNCPageCurlMaxFailedBakes) {
+    // taps still turn pages; the next settle the manager sends on its own bakes again
+    RNCPageCurlLog(@"[page-curl] %lu bakes failed in a row; no curl until the next settle", (unsigned long)_failedBakes);
+    [self setState:RNCPageCurlStateIdle reason:@"bake failed"];
+    return;
+  }
+  [self setState:RNCPageCurlStateAwaitingSettle reason:@"bake failed"];
+  [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL invalidated, id result) {}];
 }
 
 #pragma mark - messages from the content frame
@@ -1024,6 +1038,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   if ([type isEqualToString:@"unsettled"]) {
+    // the manager posts this before it moves, so every settle after it is from after the landing
+    _awaitingLanding = NO;
     [self awaitSettleIfResting:@"unsettled"];
     return;
   }
@@ -1358,8 +1374,11 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   RNCPageCurlLog(@"[page-curl] turn landed toward %@; %@", direction, turn);
   __weak __typeof(self) weakSelf = self;
   [self callBridge:turn argument:nil completion:^(BOOL ok, id result) {
-    if (!ok) {
-      [weakSelf requestRebake:@"landing failed"];
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (!ok && strongSelf != nil) {
+      // the webview never moved, so the settle it sends names the page the turn started on
+      strongSelf->_awaitingLanding = NO;
+      [strongSelf requestRebake:@"landing failed"];
     }
   }];
   // only the manager's settle leaves this state; say so if it has not come
