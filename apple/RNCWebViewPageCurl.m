@@ -50,7 +50,7 @@ typedef NS_ENUM(NSInteger, RNCPageCurlState) {
   RNCPageCurlStateAnimating,
   // the slots are being snapshotted; runs to completion, a settle that arrives meanwhile is kept for after
   RNCPageCurlStateBaking,
-  // the manager is moving the page (a tap, a jump, or a landed curl's scrollToPage); its settle starts the bake
+  // the manager is moving the page (a tap, a jump, or a landed curl's page turn); its settle starts the bake
   RNCPageCurlStateAwaitingSettle,
   // a tap reached the webview; the manager answers with a settle (page turned) or touchEnd (nothing turned)
   RNCPageCurlStateAwaitingTapResult,
@@ -214,7 +214,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   NSUInteger _stateSerial;
   // the turn just landed and the manager was asked to move; a settle for the page it left is stale
   BOOL _awaitingLanding;
-  // bakes that failed back to back; past the cap the controller stops asking for another
+  // bakes that failed back to back; at the cap the controller stops asking for another
   NSUInteger _failedBakes;
   // the latest settle that arrived while a bake or turn was running; applied once the controller is free
   NSDictionary *_pendingSettle;
@@ -561,7 +561,17 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   RNCPageCurlLog(@"[page-curl] rebake requested (%@) state=%@", reason, RNCPageCurlStateName(_state));
   [self awaitSettleIfResting:reason];
-  [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL ok, id result) {}];
+  NSUInteger serial = _stateSerial;
+  __weak __typeof(self) weakSelf = self;
+  [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL ok, id result) {
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (ok || strongSelf == nil || strongSelf->_stateSerial != serial || strongSelf->_state != RNCPageCurlStateAwaitingSettle) {
+      return;
+    }
+    // no settle is coming: open input with nothing to curl onto until the manager settles on its own
+    [strongSelf blankAllSlots];
+    [strongSelf setState:RNCPageCurlStateIdle reason:@"rebake request failed"];
+  }];
 }
 
 // the manager is about to move the page: a controller resting on it (idle, or waiting on a tap's
@@ -661,6 +671,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   RNCPageCurlLog(@"[page-curl] blank slot=%@ (page exists, not baked)", name);
   [self slot:name].texture = nil;
   [self slot:name].hasPage = YES;
+}
+
+- (void)blankAllSlots
+{
+  for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
+    [self blankSlot:slot];
+  }
 }
 
 #pragma mark - scenes
@@ -788,15 +805,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }];
 }
 
-// window.s.<fn>(argument) in the content frame: the manager's own methods. A jump resolves once the
-// page painted; a landing resolves once the manager has queued the move, and its settle follows
-- (void)callBridge:(NSString *)fn page:(NSInteger)page completion:(void (^)(BOOL ok))completion
-{
-  [self callBridge:fn argument:@(page) completion:^(BOOL ok, id result) {
-    completion(ok);
-  }];
-}
-
+// window.s.<fn>(argument) in the content frame: the manager's own methods, awaited when they return a promise
 - (void)callBridge:(NSString *)fn argument:(id)argument completion:(void (^)(BOOL ok, id result))completion
 {
   WKWebView *webView = _webView;
@@ -843,11 +852,14 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   };
 }
 
-- (RNCPageCurlStep)stepBridge:(NSString *)fn page:(NSInteger)page
+// parks the webview on a page of the current chunk; done once that page has painted
+- (RNCPageCurlStep)stepJumpToPage:(NSInteger)page
 {
   __weak __typeof(self) weakSelf = self;
   return ^(void (^done)(BOOL)) {
-    [weakSelf callBridge:fn page:page completion:done];
+    [weakSelf callBridge:@"nativePageCurlJump" argument:@(page) completion:^(BOOL ok, id result) {
+      done(ok);
+    }];
   };
 }
 
@@ -897,7 +909,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL exists = next ? page < _lastPage : page > 0;
   BOOL beyondChunk = next ? !_isLastChunk : _chunkIndex > 0;
   if (exists) {
-    [steps addObject:[self stepBridge:@"nativePageCurlJump" page:neighbor]];
+    [steps addObject:[self stepJumpToPage:neighbor]];
     [steps addObject:[self stepSnapshot:direction]];
     return;
   }
@@ -952,7 +964,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
   // a relayout may have left the webview on another page
-  [steps addObject:[self stepBridge:@"nativePageCurlJump" page:_page]];
+  [steps addObject:[self stepJumpToPage:_page]];
   [steps addObject:[self stepSnapshot:RNCPageCurlSlotCurrent]];
   [steps addObject:[self stepBlock:^{
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -963,7 +975,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotNext to:steps];
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotPrevious to:steps];
   if (moved) {
-    [steps addObject:[self stepBridge:@"nativePageCurlJump" page:_page]];
+    [steps addObject:[self stepJumpToPage:_page]];
   }
   [self runSteps:steps index:0 teardownCount:teardownCount completion:^(BOOL ok) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -987,7 +999,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 }
 
 // a finished bake opens input; one that stopped early blanks its slots, which describe another page,
-// and asks the manager to settle again
+// then bakes a kept settle, asks the manager for a new one, or gives up at the cap
 - (void)finishBake:(BOOL)ok
 {
   if (ok) {
@@ -995,9 +1007,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     [self bakePendingOrIdle:@"baked"];
     return;
   }
-  for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
-    [self blankSlot:slot];
-  }
+  [self blankAllSlots];
   if (_pendingSettle != nil) {
     [self runBakeWithSettle:_pendingSettle];
     return;
@@ -1006,11 +1016,11 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if (_failedBakes >= RNCPageCurlMaxFailedBakes) {
     // taps still turn pages; the next settle the manager sends on its own bakes again
     RNCPageCurlLog(@"[page-curl] %lu bakes failed in a row; no curl until the next settle", (unsigned long)_failedBakes);
-    [self setState:RNCPageCurlStateIdle reason:@"bake failed"];
+    [self setState:RNCPageCurlStateIdle reason:@"bakes kept failing"];
     return;
   }
   [self setState:RNCPageCurlStateAwaitingSettle reason:@"bake failed"];
-  [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL invalidated, id result) {}];
+  [self requestRebake:@"bake failed"];
 }
 
 #pragma mark - messages from the content frame
@@ -1370,10 +1380,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _pendingSettle = nil;
   _awaitingLanding = YES;
   [self setState:RNCPageCurlStateAwaitingSettle reason:@"turn landed"];
-  NSString *turn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
-  RNCPageCurlLog(@"[page-curl] turn landed toward %@; %@", direction, turn);
+  NSString *fn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
+  RNCPageCurlLog(@"[page-curl] turn landed toward %@; %@", direction, fn);
   __weak __typeof(self) weakSelf = self;
-  [self callBridge:turn argument:nil completion:^(BOOL ok, id result) {
+  [self callBridge:fn argument:nil completion:^(BOOL ok, id result) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
     if (!ok && strongSelf != nil) {
       // the webview never moved, so the settle it sends names the page the turn started on
