@@ -170,8 +170,6 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
                  completion:(void (^_Nonnull)(id _Nullable result, NSError *_Nullable error))completion;
 + (nullable RNCWebViewImpl *)implForReactTag:(NSInteger)reactTag;
 + (void)registerImpl:(nullable RNCWebViewImpl *)impl forReactTag:(NSInteger)reactTag;
-+ (void)setFastMessageSink:(nullable void (^)(NSInteger reactTag, NSString *_Nonnull data))sink;
-@property (nonatomic, assign) NSInteger fastMessageReactTag;
 - (void)goForward;
 - (void)goBack;
 - (void)reload;

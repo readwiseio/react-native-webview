@@ -26,8 +26,6 @@ static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
 static NSString *const PageSpacersMessageHandlerName = @"pageSpacers";
 static NSString *const PageCurlMessageHandlerName = @"pageCurl";
-static NSString *const FastMessageHandlerName = @"ReactNativeWebViewFast";
-static void (^RNCWebViewFastMessageSink)(NSInteger reactTag, NSString *data);
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
 
@@ -506,8 +504,6 @@ RCTAutoInsetsProtocol>
   // Shim the HTML5 history API:
   [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
                                                             name:HistoryShimName];
-  [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
-                                                            name:FastMessageHandlerName];
   [self resetupScripts:wkWebViewConfig];
 
   if(@available(macos 10.11, ios 9.0, *)) {
@@ -647,7 +643,6 @@ RCTAutoInsetsProtocol>
 {
   if (_webView) {
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
-    [_webView.configuration.userContentController removeScriptMessageHandlerForName:FastMessageHandlerName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
     [_webView removeObserver:self forKeyPath:@"estimatedProgress"];
     [_webView removeFromSuperview];
@@ -929,10 +924,6 @@ RCTAutoInsetsProtocol>
       NSMutableDictionary<NSString *, id> *event = [self baseEvent];
       [event addEntriesFromDictionary: @{@"navigationType": message.body}];
       _onLoadingFinish(event);
-    }
-  } else if ([message.name isEqualToString:FastMessageHandlerName]) {
-    if (RNCWebViewFastMessageSink && _fastMessageReactTag != 0 && [message.body isKindOfClass:[NSString class]]) {
-      RNCWebViewFastMessageSink(_fastMessageReactTag, message.body);
     }
   } else if ([message.name isEqualToString:MessageHandlerName]) {
     if (_onMessage) {
@@ -1954,15 +1945,9 @@ static NSMapTable<NSNumber *, RNCWebViewImpl *> *RNCWebViewImplRegistry(void)
   return [RNCWebViewImplRegistry() objectForKey:@(reactTag)];
 }
 
-+ (void)setFastMessageSink:(void (^)(NSInteger reactTag, NSString *data))sink
-{
-  RNCWebViewFastMessageSink = [sink copy];
-}
-
 + (void)registerImpl:(RNCWebViewImpl *)impl forReactTag:(NSInteger)reactTag
 {
   if (impl) {
-    impl.fastMessageReactTag = reactTag;
     [RNCWebViewImplRegistry() setObject:impl forKey:@(reactTag)];
   } else {
     [RNCWebViewImplRegistry() removeObjectForKey:@(reactTag)];

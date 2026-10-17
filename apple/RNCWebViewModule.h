@@ -9,13 +9,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@interface RNCWebViewModule : NSObject <
 #ifdef RCT_NEW_ARCH_ENABLED
-@interface RNCWebViewModule : NativeRNCWebViewModuleSpecBase <
 NativeRNCWebViewModuleSpec
->
 #else
-@interface RNCWebViewModule : NSObject <RCTBridgeModule>
+RCTBridgeModule
 #endif /* RCT_NEW_ARCH_ENABLED */
+>
 @end
 
 NS_ASSUME_NONNULL_END
