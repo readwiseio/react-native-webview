@@ -67,6 +67,17 @@ auto stringToOnLoadingFinishNavigationTypeEnum(std::string value) {
   [super load];
 }
 
+- (void)setTag:(NSInteger)tag
+{
+    if (self.tag != 0 && [RNCWebViewImpl implForReactTag:self.tag] == _view) {
+        [RNCWebViewImpl registerImpl:nil forReactTag:self.tag];
+    }
+    [super setTag:tag];
+    if (tag != 0) {
+        [RNCWebViewImpl registerImpl:_view forReactTag:tag];
+    }
+}
+
 - (instancetype)initWithFrame:(CGRect)frame
 {
     if (self = [super initWithFrame:frame]) {

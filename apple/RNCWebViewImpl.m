@@ -1931,6 +1931,45 @@ didFinishNavigation:(WKNavigation *)navigation
   [self evaluateJS: script thenCall: nil];
 }
 
+static NSMapTable<NSNumber *, RNCWebViewImpl *> *RNCWebViewImplRegistry(void)
+{
+  static NSMapTable *registry;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    registry = [NSMapTable strongToWeakObjectsMapTable];
+  });
+  return registry;
+}
+
++ (RNCWebViewImpl *)implForReactTag:(NSInteger)reactTag
+{
+  return [RNCWebViewImplRegistry() objectForKey:@(reactTag)];
+}
+
++ (void)registerImpl:(RNCWebViewImpl *)impl forReactTag:(NSInteger)reactTag
+{
+  if (impl) {
+    [RNCWebViewImplRegistry() setObject:impl forKey:@(reactTag)];
+  } else {
+    [RNCWebViewImplRegistry() removeObjectForKey:@(reactTag)];
+  }
+}
+
+- (void)callAsyncJavaScript:(NSString *)functionBody
+                   argument:(NSString *)argument
+                 completion:(void (^)(id result, NSError *error))completion
+{
+  if (_webView == nil) {
+    completion(nil, [NSError errorWithDomain:@"RNCWebView" code:1 userInfo:@{NSLocalizedDescriptionKey: @"webview is not mounted"}]);
+    return;
+  }
+  [_webView callAsyncJavaScript:functionBody
+                      arguments:@{@"argument": argument ?: [NSNull null]}
+                        inFrame:nil
+                 inContentWorld:WKContentWorld.pageWorld
+              completionHandler:completion];
+}
+
 - (void)goForward
 {
   [_webView goForward];

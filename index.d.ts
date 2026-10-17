@@ -33,6 +33,11 @@ declare class WebView<P = {}> extends Component<WebViewProps & P> {
     injectJavaScript: (script: string) => void;
 
     /**
+     * iOS only. Runs `functionBody` in the page with `argument` in scope and resolves with the string it returns.
+     */
+    callAsyncJavaScript?: (functionBody: string, argument: string) => Promise<string | null>;
+
+    /**
      * Focuses on WebView rendered page.
      */
     requestFocus: () => void;

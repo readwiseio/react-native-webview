@@ -8,6 +8,11 @@ export interface Spec extends TurboModule {
     shouldStart: boolean,
     lockIdentifier: Double
   ): void;
+  callAsyncJavaScript(
+    viewTag: Double,
+    functionBody: string,
+    argument: string
+  ): Promise<string | null>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('RNCWebViewModule');
