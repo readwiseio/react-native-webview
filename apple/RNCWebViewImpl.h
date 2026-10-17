@@ -165,6 +165,13 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 + (void)setCustomCertificatesForHost:(nullable NSDictionary *)certificates;
 - (void)postMessage:(NSString *_Nullable)message;
 - (void)injectJavaScript:(NSString *_Nullable)script;
+- (void)callAsyncJavaScript:(NSString *_Nonnull)functionBody
+                   argument:(NSString *_Nullable)argument
+                 completion:(void (^_Nonnull)(id _Nullable result, NSError *_Nullable error))completion;
++ (nullable RNCWebViewImpl *)implForReactTag:(NSInteger)reactTag;
++ (void)registerImpl:(nullable RNCWebViewImpl *)impl forReactTag:(NSInteger)reactTag;
++ (void)setFastMessageSink:(nullable void (^)(NSInteger reactTag, NSString *_Nonnull data))sink;
+@property (nonatomic, assign) NSInteger fastMessageReactTag;
 - (void)goForward;
 - (void)goBack;
 - (void)reload;

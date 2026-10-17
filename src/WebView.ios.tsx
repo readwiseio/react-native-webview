@@ -4,7 +4,13 @@ import React, {
   useImperativeHandle,
   useRef,
 } from 'react';
-import { Image, View, ImageSourcePropType, HostComponent } from 'react-native';
+import {
+  Image,
+  View,
+  ImageSourcePropType,
+  HostComponent,
+  findNodeHandle,
+} from 'react-native';
 import invariant from 'invariant';
 
 import RNCWebView, { Commands, NativeProps } from './RNCWebViewNativeComponent';
@@ -155,6 +161,13 @@ const WebViewComponent = forwardRef<{}, IOSWebViewProps>(
         injectJavaScript: (data: string) =>
           webViewRef.current &&
           Commands.injectJavaScript(webViewRef.current, data),
+        callAsyncJavaScript: (functionBody: string, argument: string) => {
+          const tag = webViewRef.current && findNodeHandle(webViewRef.current);
+          if (tag == null) {
+            return Promise.reject(new Error('webview is not mounted'));
+          }
+          return RNCWebViewModule.callAsyncJavaScript(tag, functionBody, argument);
+        },
         requestFocus: () =>
           webViewRef.current && Commands.requestFocus(webViewRef.current),
         clearCache: (includeDiskFiles: boolean) =>

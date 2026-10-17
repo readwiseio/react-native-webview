@@ -29,6 +29,11 @@ public class RNCWebViewModule extends NativeRNCWebViewModuleSpec {
         mRNCWebViewModuleImpl.shouldStartLoadWithLockIdentifier(shouldStart, lockIdentifier);
     }
 
+    @Override
+    public void callAsyncJavaScript(double viewTag, String functionBody, String argument, final Promise promise) {
+        promise.reject("E_UNSUPPORTED", "callAsyncJavaScript is iOS-only");
+    }
+
     public void startPhotoPickerIntent(ValueCallback<Uri> filePathCallback, String acceptType) {
         mRNCWebViewModuleImpl.startPhotoPickerIntent(acceptType, filePathCallback);
     }
