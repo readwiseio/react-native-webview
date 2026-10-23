@@ -390,9 +390,43 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     return nil;
   }
   CFTimeInterval start = CACurrentMediaTime();
-  // MTKTextureLoader refuses the snapshot's bitmap layout; redraw it as plain BGRA instead
   size_t width = CGImageGetWidth(cg);
   size_t height = CGImageGetHeight(cg);
+
+  // a WKWebView snapshot is 32-bit RGBA with alpha last; a UIGraphicsImageRenderer image is BGRA with alpha
+  // first. Metal reads both as-is given the matching pixel format, so neither needs a redraw.
+  CGBitmapInfo info = CGImageGetBitmapInfo(cg);
+  CGImageAlphaInfo alpha = (CGImageAlphaInfo)(info & kCGBitmapAlphaInfoMask);
+  CGBitmapInfo order = info & kCGBitmapByteOrderMask;
+  MTLPixelFormat directFormat = MTLPixelFormatInvalid;
+  if (CGImageGetBitsPerPixel(cg) == 32 && CGImageGetBitsPerComponent(cg) == 8) {
+    if (order == kCGBitmapByteOrder32Little && (alpha == kCGImageAlphaPremultipliedFirst || alpha == kCGImageAlphaNoneSkipFirst)) {
+      directFormat = MTLPixelFormatBGRA8Unorm;
+    } else if ((order == kCGBitmapByteOrderDefault || order == kCGBitmapByteOrder32Big) && (alpha == kCGImageAlphaPremultipliedLast || alpha == kCGImageAlphaNoneSkipLast)) {
+      directFormat = MTLPixelFormatRGBA8Unorm;
+    }
+  }
+
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:directFormat != MTLPixelFormatInvalid ? directFormat : MTLPixelFormatBGRA8Unorm
+                                                                                        width:width
+                                                                                       height:height
+                                                                                    mipmapped:NO];
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModeShared;
+  id<MTLTexture> texture = [self.device newTextureWithDescriptor:descriptor];
+
+  if (directFormat != MTLPixelFormatInvalid) {
+    CFDataRef data = CGDataProviderCopyData(CGImageGetDataProvider(cg));
+    if (data != nil) {
+      [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:CFDataGetBytePtr(data) bytesPerRow:CGImageGetBytesPerRow(cg)];
+      CFRelease(data);
+      RNCPageCurlLog(@"[page-curl] metal: texture %zux%zu in %.1fms (direct %@)", width, height, (CACurrentMediaTime() - start) * 1000.0, directFormat == MTLPixelFormatRGBA8Unorm ? @"rgba" : @"bgra");
+      return texture;
+    }
+  }
+
+  // any other layout is redrawn as plain BGRA first
+  RNCPageCurlLog(@"[page-curl] metal: snapshot layout bpp=%zu bpc=%zu bytesPerRow=%zu bitmapInfo=0x%x", CGImageGetBitsPerPixel(cg), CGImageGetBitsPerComponent(cg), CGImageGetBytesPerRow(cg), (unsigned)info);
   size_t bytesPerRow = width * 4;
   void *bytes = calloc(height, bytesPerRow);
   CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
@@ -406,16 +440,9 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
   }
   CGContextDrawImage(context, CGRectMake(0, 0, width, height), cg);
   CGContextRelease(context);
-  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                        width:width
-                                                                                       height:height
-                                                                                    mipmapped:NO];
-  descriptor.usage = MTLTextureUsageShaderRead;
-  descriptor.storageMode = MTLStorageModeShared;
-  id<MTLTexture> texture = [self.device newTextureWithDescriptor:descriptor];
   [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:bytes bytesPerRow:bytesPerRow];
   free(bytes);
-  RNCPageCurlLog(@"[page-curl] metal: texture %zux%zu in %.1fms", width, height, (CACurrentMediaTime() - start) * 1000.0);
+  RNCPageCurlLog(@"[page-curl] metal: texture %zux%zu in %.1fms (redrawn)", width, height, (CACurrentMediaTime() - start) * 1000.0);
   return texture;
 }
 

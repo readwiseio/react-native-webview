@@ -79,6 +79,7 @@
     "android/build.gradle",
     "android/gradle.properties",
     "apple",
+    "apple-tests",
     "ios",
     "macos",
     "windows",
