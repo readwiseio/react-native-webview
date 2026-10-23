@@ -19,6 +19,13 @@ Pod::Spec.new do |s|
 
   s.source_files    = "apple/**/*.{h,m,mm,swift}"
 
+  # opt in from a Podfile with :testspecs => ['Tests']
+  s.test_spec 'Tests' do |test_spec|
+    test_spec.source_files = "apple-tests/**/*.{h,m}"
+    # the tests are Objective-C, but the bundle links the pod's C++ dependencies
+    test_spec.library = "c++"
+  end
+
   if defined?(install_modules_dependencies()) != nil
     install_modules_dependencies(s);
   else
