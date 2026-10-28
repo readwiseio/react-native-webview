@@ -438,14 +438,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     BOOL moved = strongSelf->_touchObserver.moved;
     RNCPageCurlLog(@"[page-curl] touches ended; moved=%d state=%@ reachedWebView=%d", moved, RNCPageCurlStateName(strongSelf->_machine.state),
                    strongSelf->_touchReachedWebView);
-    if (RNCPageCurlLoggingEnabled) {
-      NSMutableArray *states = [NSMutableArray array];
-      [states addObject:[NSString stringWithFormat:@"pan=%ld", (long)strongSelf->_pan.state]];
-      for (UIGestureRecognizer *hold in strongSelf->_knownHolds) {
-        [states addObject:[NSString stringWithFormat:@"%@=%ld", NSStringFromClass([hold class]), (long)hold.state]];
-      }
-      RNCPageCurlLog(@"[page-curl] recognizer states at lift: %@", [states componentsJoinedByString:@" "]);
-    }
     if (!moved && strongSelf->_touchReachedWebView && strongSelf->_machine.state == RNCPageCurlStateIdle) {
       [strongSelf apply:[strongSelf->_machine tapped]];
       [strongSelf emit:@"tap" direction:nil detail:nil];
