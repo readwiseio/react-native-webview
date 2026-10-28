@@ -38,6 +38,7 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"backShowThrough": @0.15,
     @"completeDistance": @40,
     @"flickVelocity": @400,
+    @"tapTurnVelocity": @2000,
     @"durationBase": @0.18,
     @"durationPerRemaining": @0.32,
     @"speedMin": @0.45,
@@ -172,6 +173,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL _edgeEmitted;
   // the bake loop; the controller reports what happened and carries out the effects it returns
   RNCPageCurlStateMachine *_machine;
+  // a margin tap the manager handed over, curled once that tap's own touchEnd has come in
+  NSString *_pendingTapTurn;
   NSHashTable<UIGestureRecognizer *> *_knownHolds;
   // UIKit hit-tests once, at touch-down; only a touch it delivered inside the webview is one the
   // manager saw and will answer
@@ -415,6 +418,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self applyTuning];
   [self showCover];
   [self apply:[_machine enable]];
+  // the manager hands margin taps over only once it knows this controller curls them
+  [self callBridge:@"nativePageCurlAnimateTaps" argument:nil completion:^(BOOL ok, id result) {}];
 
   __weak __typeof(self) weakSelf = self;
   _touchObserver = [RNCPageCurlTouchObserver new];
@@ -546,6 +551,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [_inputBlocker removeFromSuperview];
   _inputBlocker = nil;
   _turnDirection = nil;
+  _pendingTapTurn = nil;
   _edgeEmitted = NO;
 }
 
@@ -941,11 +947,38 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     [self apply:[_machine unsettled]];
     return;
   }
+  if ([type isEqualToString:@"tapTurn"]) {
+    _pendingTapTurn = [message[@"direction"] isEqualToString:@"previous"] ? RNCPageCurlSlotPrevious : RNCPageCurlSlotNext;
+    return;
+  }
   if ([type isEqualToString:@"touchEnd"]) {
     [self apply:[_machine touchEnded]];
+    [self runPendingTapTurn];
     return;
   }
   RNCPageCurlLog(@"[page-curl] unknown message type %@", type);
+}
+
+// a margin tap curls like a released flick; with nothing baked to curl onto, or the controller busy,
+// it turns the page instantly the way a tap always did
+- (void)runPendingTapTurn
+{
+  NSString *direction = _pendingTapTurn;
+  if (direction == nil) {
+    return;
+  }
+  _pendingTapTurn = nil;
+  if (_machine.canBeginTurn && _turnDirection == nil && ![self panActive]) {
+    [self beginTurn:direction from:_touchObserver.startPoint];
+    if (_turnDirection != nil) {
+      RNCPageCurlLog(@"[page-curl] tap turn toward %@", direction);
+      [self endTurnCompleting:YES velocity:CGPointMake([self tune:@"tapTurnVelocity"], 0)];
+      return;
+    }
+  }
+  NSString *fn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
+  RNCPageCurlLog(@"[page-curl] tap turn toward %@ not curled (state=%@); %@", direction, RNCPageCurlStateName(_machine.state), fn);
+  [self callBridge:fn argument:nil completion:^(BOOL ok, id result) {}];
 }
 
 #pragma mark - effects
