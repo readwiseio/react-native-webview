@@ -18,6 +18,8 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"radiusFraction": @0.12,
     @"radiusMax": @90,
     @"bendInDistance": @30,
+    @"grabFloor": @0.3,
+    @"sweepGain": @2,
     @"settleGain": @2,
     @"tiltSoftness": @120,
     @"castWidthFloor": @0.5,
@@ -1131,9 +1133,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   CGFloat height = _turnSheetRect.size.height;
   _turnRadiusMax = MIN([self tune:@"radiusMax"], width * [self tune:@"radiusFraction"]);
   _renderer.curlRadiusMax = _turnRadiusMax;
-  // the sheet is grabbed at its outer edge on the touch's row, wherever the touch lands, and that
-  // edge moves exactly as far as the finger does
-  _turnStart = CGPointMake(width, MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
+  // the sheet is grabbed under the finger, no closer to the spine than grabFloor of the width, and
+  // that point moves exactly as far as the finger does
+  CGFloat grabX = MIN(MAX([self localXFor:start.x], width * [self tune:@"grabFloor"]), width);
+  _turnStart = CGPointMake(grabX, MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
   _turnRest = _turnReversed ? [self turnedFinger] : _turnStart;
   _turnTouchDown = CGPointMake([self localXFor:start.x], start.y - _turnSheetRect.origin.y);
   _turnDrag = 0;
@@ -1228,11 +1231,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     finger = CGPointMake(_turnStart.x - nx * distance, _turnStart.y - ny * distance);
   }
   CGFloat radius = MIN(wantedRadius, MAX(2 * (room - distance / 2) / M_PI, 0));
-  // a zero drag is a flat sheet: while the bend forms, the fold starts past the outer edge and sweeps
-  // in, instead of sitting at the grab point with everything beyond it mirrored onto itself
-  CGFloat bendIn = MAX([self tune:@"bendInDistance"], 1);
-  CGFloat settle = MAX(0, 1 - distance / bendIn);
-  CGFloat foldOffset = settle * (_turnSheetRect.size.width - _turnStart.x + M_PI * radius / 2 + 4);
+  // a zero drag is a flat sheet: the fold starts past the outer edge and sweeps in to the grab point
+  // at sweepGain times the finger's speed, instead of appearing at the grab point with everything
+  // beyond it already folded over
+  CGFloat beyond = _turnSheetRect.size.width - _turnStart.x;
+  CGFloat sweepIn = MAX(MAX([self tune:@"bendInDistance"], 1), beyond / MAX([self tune:@"sweepGain"], 0.01));
+  CGFloat settle = MAX(0, 1 - distance / sweepIn);
+  CGFloat foldOffset = settle * (beyond + M_PI * radius / 2 + 4);
   CGFloat foldX = _turnStart.x + nx * foldOffset - nx * (distance + M_PI * radius) / 2;
   _renderer.curlStart = CGPointMake(_turnStart.x + nx * foldOffset, _turnStart.y + ny * foldOffset);
   _renderer.curlFinger = CGPointMake(finger.x + nx * foldOffset, finger.y + ny * foldOffset);
