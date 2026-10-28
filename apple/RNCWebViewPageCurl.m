@@ -4,6 +4,8 @@
 #import <UIKit/UIGestureRecognizerSubclass.h>
 
 BOOL RNCPageCurlLoggingEnabled = NO;
+// holds at least this long carry an intent of their own (select, lift a link); shorter ones are tap decoration
+static const NSTimeInterval RNCPageCurlIntentHoldSeconds = 0.3;
 
 static NSString *const RNCPageCurlSlotCurrent = @"current";
 static NSString *const RNCPageCurlSlotPrevious = @"previous";
@@ -60,16 +62,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   return 1 - inv * inv * inv;
 }
 
-// Never recognizes; only reports raw touch begin/end so a tap can be told apart from a drag
-// and a still hold can hand the touch back to WebKit's selection recognizers.
+// Never recognizes; only reports raw touch begin/end so a tap can be told apart from a drag.
 @interface RNCPageCurlTouchObserver : UIGestureRecognizer
 @property (nonatomic, copy) void (^onTouchesBegan)(void);
 @property (nonatomic, copy) void (^onTouchesEnded)(void);
-@property (nonatomic, copy) void (^onHeldStill)(void);
 @property (nonatomic, assign) CGPoint startPoint;
 @property (nonatomic, assign) CFTimeInterval startTime;
 @property (nonatomic, assign) BOOL moved;
-@property (nonatomic, assign) NSUInteger touchSequence;
 // the first finger down; later fingers are ignored until it lifts
 @property (nonatomic, weak) UITouch *touch;
 @end
@@ -86,16 +85,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   self.startPoint = [self.touch locationInView:self.view];
   self.startTime = CACurrentMediaTime();
   self.moved = NO;
-  self.touchSequence += 1;
-  NSUInteger sequence = self.touchSequence;
-  __weak __typeof(self) weakSelf = self;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    __strong __typeof(weakSelf) strongSelf = weakSelf;
-    if (strongSelf != nil && strongSelf.touchSequence == sequence && !strongSelf.moved &&
-        strongSelf.state == UIGestureRecognizerStatePossible && strongSelf.onHeldStill) {
-      strongSelf.onHeldStill();
-    }
-  });
   if (self.onTouchesBegan) {
     self.onTouchesBegan();
   }
@@ -109,8 +98,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   CGPoint point = [touch locationInView:self.view];
-  if (fabs(point.x - self.startPoint.x) > 8 || fabs(point.y - self.startPoint.y) > 8) {
+  if (!self.moved && (fabs(point.x - self.startPoint.x) > 8 || fabs(point.y - self.startPoint.y) > 8)) {
     self.moved = YES;
+    RNCPageCurlLog(@"[page-curl] touch moved past 8pt after %.0fms", (CACurrentMediaTime() - self.startTime) * 1000);
   }
 }
 
@@ -180,6 +170,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL _edgeEmitted;
   // the bake loop; the controller reports what happened and carries out the effects it returns
   RNCPageCurlStateMachine *_machine;
+  NSHashTable<UIGestureRecognizer *> *_knownHolds;
   // UIKit hit-tests once, at touch-down; only a touch it delivered inside the webview is one the
   // manager saw and will answer
   BOOL _touchReachedWebView;
@@ -447,26 +438,22 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     BOOL moved = strongSelf->_touchObserver.moved;
     RNCPageCurlLog(@"[page-curl] touches ended; moved=%d state=%@ reachedWebView=%d", moved, RNCPageCurlStateName(strongSelf->_machine.state),
                    strongSelf->_touchReachedWebView);
+    if (RNCPageCurlLoggingEnabled) {
+      NSMutableArray *states = [NSMutableArray array];
+      [states addObject:[NSString stringWithFormat:@"pan=%ld", (long)strongSelf->_pan.state]];
+      for (UIGestureRecognizer *hold in strongSelf->_knownHolds) {
+        [states addObject:[NSString stringWithFormat:@"%@=%ld", NSStringFromClass([hold class]), (long)hold.state]];
+      }
+      RNCPageCurlLog(@"[page-curl] recognizer states at lift: %@", [states componentsJoinedByString:@" "]);
+    }
     if (!moved && strongSelf->_touchReachedWebView && strongSelf->_machine.state == RNCPageCurlStateIdle) {
       [strongSelf apply:[strongSelf->_machine tapped]];
       [strongSelf emit:@"tap" direction:nil detail:nil];
     }
   };
-  _touchObserver.onHeldStill = ^{
-    __strong __typeof(weakSelf) strongSelf = weakSelf;
-    if (strongSelf == nil || strongSelf->_pan == nil) {
-      return;
-    }
-    // a still hold is a text-selection intent, not a page drag: fail the curl pan so
-    // WebKit's long-press recognizers (which now wait on it) can proceed
-    if (strongSelf->_pan.state == UIGestureRecognizerStatePossible) {
-      RNCPageCurlLog(@"[page-curl] held still for 350ms; releasing the curl pan for this touch");
-      strongSelf->_pan.enabled = NO;
-      strongSelf->_pan.enabled = YES;
-    }
-  };
   [host addGestureRecognizer:_touchObserver];
 
+  _knownHolds = [NSHashTable weakObjectsHashTable];
   _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
   _pan.maximumNumberOfTouches = 1;
   _pan.delegate = self;
@@ -476,7 +463,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 }
 
 // touch scrolling off in every scroll view inside the webview (rescanned at each touch-down: WebKit
-// adds more as chunks load) and its pans wait for the curl pan; not undone, the caller remounts
+// adds more as chunks load) and its pans wait for the curl pan; not undone, the caller remounts.
+// The curl pan itself waits for WebKit's long holds (the selection loupe at 0.5s, link lift at
+// 0.65s): a hold fails as soon as the finger moves, so a drag still curls at once, and a still
+// finger selects. The short holds (tap highlight at 0.12s) keep waiting on the pan like the pans do
 - (void)makeWebPansYieldToCurl
 {
   if (_webView == nil || _pan == nil) {
@@ -484,6 +474,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:_webView];
   NSUInteger recognizers = 0;
+  NSUInteger holds = 0;
   NSUInteger scrollViews = 0;
   while (stack.count > 0) {
     UIView *view = stack.lastObject;
@@ -496,17 +487,27 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
       }
     }
     for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
-      BOOL isPan = [recognizer isKindOfClass:[UIPanGestureRecognizer class]];
-      BOOL isLongPress = [recognizer isKindOfClass:[UILongPressGestureRecognizer class]];
-      if ((isPan || isLongPress) && recognizer != _pan) {
+      if (recognizer == _pan) {
+        continue;
+      }
+      UILongPressGestureRecognizer *hold = [recognizer isKindOfClass:[UILongPressGestureRecognizer class]] ? (UILongPressGestureRecognizer *)recognizer : nil;
+      if (hold != nil && hold.minimumPressDuration >= RNCPageCurlIntentHoldSeconds) {
+        if (![_knownHolds containsObject:hold]) {
+          [_knownHolds addObject:hold];
+          RNCPageCurlLog(@"[page-curl] curl pan waits on %@ (%.2fs, %.0fpt)", NSStringFromClass([hold class]), hold.minimumPressDuration,
+                hold.allowableMovement);
+        }
+        [_pan requireGestureRecognizerToFail:hold];
+        holds += 1;
+      } else if (hold != nil || [recognizer isKindOfClass:[UIPanGestureRecognizer class]]) {
         [recognizer requireGestureRecognizerToFail:_pan];
         recognizers += 1;
       }
     }
     [stack addObjectsFromArray:view.subviews];
   }
-  RNCPageCurlLog(@"[page-curl] web scrolling off: %lu scroll views changed, %lu recognizers yield to the curl pan",
-        (unsigned long)scrollViews, (unsigned long)recognizers);
+  RNCPageCurlLog(@"[page-curl] web scrolling off: %lu scroll views changed, %lu recognizers yield to the curl pan, which waits on %lu holds",
+        (unsigned long)scrollViews, (unsigned long)recognizers, (unsigned long)holds);
 }
 
 - (void)setSpine:(NSString *)spine
@@ -540,6 +541,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if (_pan != nil) {
     [_pan.view removeGestureRecognizer:_pan];
     _pan = nil;
+    _knownHolds = nil;
   }
   if (_touchObserver != nil) {
     [_touchObserver.view removeGestureRecognizer:_touchObserver];
