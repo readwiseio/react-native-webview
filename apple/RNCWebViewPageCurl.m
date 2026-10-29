@@ -38,7 +38,8 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"backShowThrough": @0.15,
     @"completeDistance": @40,
     @"flickVelocity": @400,
-    @"tapTurnVelocity": @2000,
+    @"tapTurnDuration": @0.42,
+    @"tapBendInDistance": @300,
     @"durationBase": @0.18,
     @"durationPerRemaining": @0.32,
     @"speedMin": @0.45,
@@ -63,6 +64,16 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   CGFloat inv = 1 - t;
   return 1 - inv * inv * inv;
+}
+
+// a turn that starts from rest (a tap) eases in as well as out, instead of leaving at full speed
+static CGFloat RNCPageCurlEaseInOut(CGFloat t)
+{
+  if (t < 0.5) {
+    return 4 * t * t * t;
+  }
+  CGFloat inv = -2 * t + 2;
+  return 1 - inv * inv * inv / 2;
 }
 
 // Never recognizes; only reports raw touch begin/end so a tap can be told apart from a drag.
@@ -213,6 +224,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   CGPoint _animationFrom;
   CGPoint _animationTo;
   BOOL _animationCompletes;
+  BOOL _animationFromRest;
 }
 
 - (instancetype)initWithHostView:(UIView *)hostView webView:(WKWebView *)webView
@@ -971,8 +983,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if (_machine.canBeginTurn && _turnDirection == nil && ![self panActive]) {
     [self beginTurn:direction from:_touchObserver.startPoint];
     if (_turnDirection != nil) {
-      RNCPageCurlLog(@"[page-curl] tap turn toward %@", direction);
-      [self endTurnCompleting:YES velocity:CGPointMake([self tune:@"tapTurnVelocity"], 0)];
+      CFTimeInterval duration = [self tune:@"tapTurnDuration"];
+      RNCPageCurlLog(@"[page-curl] tap turn toward %@ in %.0fms", direction, duration * 1000);
+      [self animateFingerTo:_turnReversed ? _turnStart : [self turnedFinger] duration:duration completes:YES];
+      _animationFromRest = YES;
       return;
     }
   }
@@ -1227,7 +1241,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   CGFloat farthest = MAX(_turnStart.y, _turnSheetRect.size.height - _turnStart.y);
   CGFloat room = _turnStart.x * nx - fabs(ny) * farthest;
   // paper lifts into its full curve as soon as it is pulled: the bend is complete bendInDistance into the drag
-  CGFloat wantedRadius = _turnRadiusMax * MIN(1, distance / MAX([self tune:@"bendInDistance"], 1));
+  CGFloat wantedRadius = _turnRadiusMax * MIN(1, distance / MAX([self bendInDistance], 1));
   CGFloat need = (distance + M_PI * wantedRadius) / 2;
   if (need > room && fabs(ny) > 0.0005) {
     // the largest tilt that leaves room for the full bend (room falls as the tilt grows)
@@ -1268,7 +1282,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   // at sweepGain times the finger's speed, instead of appearing at the grab point with everything
   // beyond it already folded over
   CGFloat beyond = _turnSheetRect.size.width - _turnStart.x;
-  CGFloat sweepIn = MAX(MAX([self tune:@"bendInDistance"], 1), beyond / MAX([self tune:@"sweepGain"], 0.01));
+  CGFloat sweepIn = MAX(MAX([self bendInDistance], 1), beyond / MAX([self tune:@"sweepGain"], 0.01));
   CGFloat settle = MAX(0, 1 - distance / sweepIn);
   CGFloat foldOffset = settle * (beyond + M_PI * radius / 2 + 4);
   CGFloat foldX = _turnStart.x + nx * foldOffset - nx * (distance + M_PI * radius) / 2;
@@ -1280,6 +1294,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   RNCPageCurlLog(@"[page-curl] finger %.1f,%.1f (grab=%.1f,%.1f distance=%.1f room=%.1f foldOffset=%.1f foldX=%.1f R=%.1f fold=%.2f)",
                       finger.x, finger.y, _turnStart.x, _turnStart.y, distance, room, foldOffset, foldX, radius, _turnFold);
   [_renderer setNeedsDisplay];
+}
+
+// a tap's turn forms its bend over a longer run than a drag does: a timed animation through the short
+// one makes the fold leap ahead of the page edge and then fall back
+- (CGFloat)bendInDistance
+{
+  return _animation != nil && _animationFromRest ? [self tune:@"tapBendInDistance"] : [self tune:@"bendInDistance"];
 }
 
 // 0 at the start of the turn, 1 when the page has fully turned
@@ -1323,6 +1344,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _animationStart = CACurrentMediaTime();
   _animationDuration = MAX(duration, 0.01);
   _animationCompletes = completes;
+  _animationFromRest = NO;
   _animation = [CADisplayLink displayLinkWithTarget:self selector:@selector(onAnimationTick:)];
   [_animation addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
@@ -1330,7 +1352,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (void)onAnimationTick:(CADisplayLink *)link
 {
   CGFloat t = MIN(1, (CACurrentMediaTime() - _animationStart) / _animationDuration);
-  CGFloat eased = RNCPageCurlEaseOut(t);
+  CGFloat eased = _animationFromRest ? RNCPageCurlEaseInOut(t) : RNCPageCurlEaseOut(t);
   CGPoint finger = CGPointMake(_animationFrom.x + (_animationTo.x - _animationFrom.x) * eased,
                                _animationFrom.y + (_animationTo.y - _animationFrom.y) * eased);
   [self applyFinger:finger];
