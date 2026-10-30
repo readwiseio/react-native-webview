@@ -6,6 +6,14 @@ static NSDictionary *Settle(NSInteger page, NSInteger chunk)
   return @{@"type": @"settled", @"page": @(page), @"totalPages": @10, @"chunkIndex": @(chunk), @"isLastChunk": @NO};
 }
 
+// a settle from a manager that reports when the page changes under the bakes
+static NSDictionary *RevisedSettle(NSInteger page, NSInteger chunk, NSInteger revision)
+{
+  NSMutableDictionary *settle = [Settle(page, chunk) mutableCopy];
+  settle[@"revision"] = @(revision);
+  return settle;
+}
+
 // one line per effect the controller has to carry out; notes are log lines only
 static NSArray<NSString *> *Describe(NSArray<RNCPageCurlEffect *> *effects)
 {
@@ -16,7 +24,8 @@ static NSArray<NSString *> *Describe(NSArray<RNCPageCurlEffect *> *effects)
         [lines addObject:[NSString stringWithFormat:@"state %@ (%@)", RNCPageCurlStateName(effect.state), effect.reason]];
         break;
       case RNCPageCurlEffectBake:
-        [lines addObject:[NSString stringWithFormat:@"bake page %@ chunk %@", effect.settle[@"page"], effect.settle[@"chunkIndex"]]];
+        [lines addObject:[NSString stringWithFormat:@"bake page %@ chunk %@%@", effect.settle[@"page"], effect.settle[@"chunkIndex"],
+                          effect.direction ? [NSString stringWithFormat:@" (%@ slot only)", effect.direction] : @""]];
         break;
       case RNCPageCurlEffectBlankSlots:
         [lines addObject:@"blank slots"];
@@ -362,6 +371,101 @@ static BOOL Contains(NSArray<RNCPageCurlEffect *> *effects, RNCPageCurlEffectKin
   XCTAssertEqualObjects(Describe([_machine settled:Settle(3, 1)]), (@[@"state baking (settle)", @"bake page 3 chunk 1"]));
 }
 
+#pragma mark - baking only the slot a turn exposed
+
+// page 3 baked at revision 7, then a turn toward `direction` landed
+- (void)landRevisedTurnToward:(NSString *)direction
+{
+  [_machine enable];
+  [_machine settled:RevisedSettle(3, 1, 7)];
+  [_machine bakeFinished:YES];
+  [_machine turnBegan];
+  [_machine turnFinishedToward:direction completed:YES];
+  [_machine unsettled];
+}
+
+- (void)testALandingOnTheNextPageBakesOnlyTheNextSlot
+{
+  [self landRevisedTurnToward:@"next"];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(4, 1, 7)]), (@[@"state baking (settle)", @"bake page 4 chunk 1 (next slot only)"]));
+}
+
+- (void)testALandingOnThePreviousPageBakesOnlyThePreviousSlot
+{
+  [self landRevisedTurnToward:@"previous"];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(2, 1, 7)]),
+                        (@[@"state baking (settle)", @"bake page 2 chunk 1 (previous slot only)"]));
+}
+
+- (void)testTurnsInARowEachBakeOnlyTheExposedSlot
+{
+  [self landRevisedTurnToward:@"next"];
+  [_machine settled:RevisedSettle(4, 1, 7)];
+  [_machine bakeFinished:YES];
+  [_machine turnBegan];
+  [_machine turnFinishedToward:@"next" completed:YES];
+  [_machine unsettled];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(5, 1, 7)]), (@[@"state baking (settle)", @"bake page 5 chunk 1 (next slot only)"]));
+}
+
+- (void)testAChangedPageBakesEverySlot
+{
+  [self landRevisedTurnToward:@"next"];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(4, 1, 8)]), (@[@"state baking (settle)", @"bake page 4 chunk 1"]));
+}
+
+- (void)testALandingInAnotherChunkBakesEverySlot
+{
+  [self landRevisedTurnToward:@"next"];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(0, 2, 7)]), (@[@"state baking (settle)", @"bake page 0 chunk 2"]));
+}
+
+- (void)testALandingThatRepaginatedTheChunkBakesEverySlot
+{
+  [self landRevisedTurnToward:@"next"];
+  NSMutableDictionary *settle = [RevisedSettle(4, 1, 7) mutableCopy];
+  settle[@"totalPages"] = @11;
+  XCTAssertEqualObjects(Describe([_machine settled:settle]), (@[@"state baking (settle)", @"bake page 4 chunk 1"]));
+}
+
+- (void)testARefusedLandingBakesEverySlot
+{
+  [self landRevisedTurnToward:@"next"];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(3, 1, 7)]), (@[@"state baking (settle)", @"bake page 3 chunk 1"]));
+}
+
+- (void)testAFailedLandingBakesEverySlot
+{
+  [_machine enable];
+  [_machine settled:RevisedSettle(3, 1, 7)];
+  [_machine bakeFinished:YES];
+  [_machine turnBegan];
+  [_machine turnFinishedToward:@"next" completed:YES];
+  [_machine landingFinished:NO];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(4, 1, 7)]), (@[@"state baking (settle)", @"bake page 4 chunk 1"]));
+}
+
+- (void)testARebakeRequestAfterALandingBakesEverySlot
+{
+  [self landRevisedTurnToward:@"next"];
+  [_machine rebakeRequested:@"resize"];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(4, 1, 7)]), (@[@"state baking (settle)", @"bake page 4 chunk 1"]));
+}
+
+- (void)testASettleWithoutARevisionBakesEverySlot
+{
+  [self landTurn];
+  XCTAssertEqualObjects(Describe([_machine settled:Settle(4, 1)]), (@[@"state baking (settle)", @"bake page 4 chunk 1"]));
+}
+
+- (void)testTheSettleAfterAnOnlySlotBakeBakesEverySlot
+{
+  [self landRevisedTurnToward:@"next"];
+  [_machine settled:RevisedSettle(4, 1, 7)];
+  [_machine bakeFinished:YES];
+  XCTAssertEqualObjects(Describe([_machine settled:RevisedSettle(4, 1, 8)]), (@[@"state baking (settle)", @"bake page 4 chunk 1"]));
+}
+
 #pragma mark - taps
 
 - (void)testATapWaitsForItsResult
@@ -514,6 +618,7 @@ typedef NSArray<RNCPageCurlEffect *> *(^RNCPageCurlEvent)(RNCPageCurlStateMachin
   return @{
     @"settled 3": ^(RNCPageCurlStateMachine *m, NSUInteger token) { return [m settled:Settle(3, 1)]; },
     @"settled 4": ^(RNCPageCurlStateMachine *m, NSUInteger token) { return [m settled:Settle(4, 1)]; },
+    @"settled 4 revised": ^(RNCPageCurlStateMachine *m, NSUInteger token) { return [m settled:RevisedSettle(4, 1, 7)]; },
     @"unsettled": ^(RNCPageCurlStateMachine *m, NSUInteger token) { return [m unsettled]; },
     @"touchEnded": ^(RNCPageCurlStateMachine *m, NSUInteger token) { return [m touchEnded]; },
     @"tapped": ^(RNCPageCurlStateMachine *m, NSUInteger token) { return [m tapped]; },

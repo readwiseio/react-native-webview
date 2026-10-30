@@ -6,6 +6,9 @@
 BOOL RNCPageCurlLoggingEnabled = NO;
 // holds at least this long carry an intent of their own (select, lift a link); shorter ones are tap decoration
 static const NSTimeInterval RNCPageCurlIntentHoldSeconds = 0.3;
+// the content frame's own tap rule: shorter than this and still
+static const NSTimeInterval RNCPageCurlTapSeconds = 0.3;
+static const NSUInteger RNCPageCurlMaxQueuedTapTurns = 4;
 
 static NSString *const RNCPageCurlSlotCurrent = @"current";
 static NSString *const RNCPageCurlSlotPrevious = @"previous";
@@ -40,6 +43,7 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"flickVelocity": @400,
     @"tapTurnDuration": @0.42,
     @"tapBendInDistance": @300,
+    @"queuedTapTurnDuration": @0.26,
     @"durationBase": @0.18,
     @"durationPerRemaining": @0.32,
     @"speedMin": @0.45,
@@ -186,6 +190,13 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
   RNCPageCurlStateMachine *_machine;
   // a margin tap the manager handed over, curled once that tap's own touchEnd has come in
   NSString *_pendingTapTurn;
+  // margin taps that came in while busy, turned one after another once idle
+  NSMutableArray<NSString *> *_queuedTapTurns;
+  // the manager's margin tap zones in webview points; a busy controller reads taps on its blocker with them
+  BOOL _hasTapZones;
+  CGFloat _tapZoneLeft;
+  CGFloat _tapZoneRight;
+  BOOL _touchHitBlocker;
   NSHashTable<UIGestureRecognizer *> *_knownHolds;
   // UIKit hit-tests once, at touch-down; only a touch it delivered inside the webview is one the
   // manager saw and will answer
@@ -233,6 +244,7 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     _hostView = hostView;
     _webView = webView;
     _machine = [RNCPageCurlStateMachine new];
+    _queuedTapTurns = [NSMutableArray array];
     _slots = [NSMutableDictionary dictionary];
     for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
       _slots[slot] = [RNCPageCurlSlot new];
@@ -445,6 +457,7 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     }
     UIView *hit = strongSelf->_touchObserver.touch.view;
     strongSelf->_touchReachedWebView = hit != nil && strongSelf->_webView != nil && [hit isDescendantOfView:strongSelf->_webView];
+    strongSelf->_touchHitBlocker = hit != nil && hit == strongSelf->_inputBlocker;
     RNCPageCurlLog(@"[page-curl] touches began; state=%@ reachedWebView=%d", RNCPageCurlStateName(strongSelf->_machine.state), strongSelf->_touchReachedWebView);
     [strongSelf makeWebPansYieldToCurl];
     [strongSelf emit:@"touch" direction:nil detail:nil];
@@ -460,6 +473,11 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     if (!moved && strongSelf->_touchReachedWebView && strongSelf->_machine.state == RNCPageCurlStateIdle) {
       [strongSelf apply:[strongSelf->_machine tapped]];
       [strongSelf emit:@"tap" direction:nil detail:nil];
+      return;
+    }
+    BOOL quick = CACurrentMediaTime() - strongSelf->_touchObserver.startTime < RNCPageCurlTapSeconds;
+    if (!moved && quick && strongSelf->_touchHitBlocker) {
+      [strongSelf queueTapTurnAt:strongSelf->_touchObserver.startPoint];
     }
   };
   [host addGestureRecognizer:_touchObserver];
@@ -564,6 +582,8 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
   _inputBlocker = nil;
   _turnDirection = nil;
   _pendingTapTurn = nil;
+  [_queuedTapTurns removeAllObjects];
+  _hasTapZones = NO;
   _edgeEmitted = NO;
 }
 
@@ -903,8 +923,9 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
   }];
 }
 
-// every slot from scratch; the settle says which page the webview rests on
-- (void)runBakeWithSettle:(NSDictionary *)settle
+// every slot from scratch, or with `onlyToward` just the one beyond the page that a turn there exposed;
+// the settle says which page the webview rests on
+- (void)runBakeWithSettle:(NSDictionary *)settle onlyToward:(NSString *)onlyToward
 {
   _edgeEmitted = NO;
   _page = [settle[@"page"] integerValue];
@@ -913,10 +934,25 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
   _isLastChunk = [settle[@"isLastChunk"] boolValue];
   NSUInteger teardownCount = _teardownCount;
   CFTimeInterval start = CACurrentMediaTime();
-  RNCPageCurlLog(@"[page-curl] bake start page=%ld/%ld chunk=%ld last=%d", (long)_page, (long)_lastPage, (long)_chunkIndex, _isLastChunk);
+  RNCPageCurlLog(@"[page-curl] bake start page=%ld/%ld chunk=%ld last=%d only=%@", (long)_page, (long)_lastPage, (long)_chunkIndex, _isLastChunk,
+                 onlyToward ?: @"-");
 
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
+  if (onlyToward != nil) {
+    [self addNeighborStepsForPage:_page direction:onlyToward to:steps];
+    // also when nothing moved: the baked labels in the page still name the page the last bake ended on
+    [steps addObject:[self stepJumpToPage:_page]];
+    [self runSteps:steps index:0 teardownCount:teardownCount completion:^(BOOL ok) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf == nil) {
+        return;
+      }
+      RNCPageCurlLog(@"[page-curl] bake of the %@ slot %@ in %.1fms", onlyToward, ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
+      [strongSelf apply:[strongSelf->_machine bakeFinished:ok]];
+    }];
+    return;
+  }
   // a relayout may have left the webview on another page
   [steps addObject:[self stepJumpToPage:_page]];
   [steps addObject:[self stepSnapshot:RNCPageCurlSlotCurrent]];
@@ -968,11 +1004,22 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     [self runPendingTapTurn];
     return;
   }
+  if ([type isEqualToString:@"tapZones"]) {
+    _hasTapZones = [message[@"left"] isKindOfClass:[NSNumber class]] && [message[@"right"] isKindOfClass:[NSNumber class]];
+    _tapZoneLeft = [message[@"left"] doubleValue];
+    _tapZoneRight = [message[@"right"] doubleValue];
+    return;
+  }
   RNCPageCurlLog(@"[page-curl] unknown message type %@", type);
 }
 
-// a margin tap curls like a released flick; with nothing baked to curl onto, or the controller busy,
-// it turns the page instantly the way a tap always did
+- (BOOL)busy
+{
+  return !_machine.canBeginTurn || _turnDirection != nil || [self panActive];
+}
+
+// a margin tap curls like a released flick; while busy it waits its turn, and with nothing baked to curl
+// onto it turns the page instantly the way a tap always did
 - (void)runPendingTapTurn
 {
   NSString *direction = _pendingTapTurn;
@@ -980,19 +1027,67 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     return;
   }
   _pendingTapTurn = nil;
-  if (_machine.canBeginTurn && _turnDirection == nil && ![self panActive]) {
-    [self beginTurn:direction from:_touchObserver.startPoint];
-    if (_turnDirection != nil) {
-      CFTimeInterval duration = [self tune:@"tapTurnDuration"];
-      RNCPageCurlLog(@"[page-curl] tap turn toward %@ in %.0fms", direction, duration * 1000);
-      [self animateFingerTo:_turnReversed ? _turnStart : [self turnedFinger] duration:duration completes:YES];
-      _animationFromRest = YES;
-      return;
-    }
+  if ([self busy]) {
+    [self queueTapTurn:direction];
+    return;
+  }
+  [self curlTapTurn:direction duration:[self tune:@"tapTurnDuration"]];
+}
+
+- (void)curlTapTurn:(NSString *)direction duration:(CFTimeInterval)duration
+{
+  [self beginTurn:direction from:_touchObserver.startPoint];
+  if (_turnDirection != nil) {
+    RNCPageCurlLog(@"[page-curl] tap turn toward %@ in %.0fms", direction, duration * 1000);
+    [self animateFingerTo:_turnReversed ? _turnStart : [self turnedFinger] duration:duration completes:YES];
+    _animationFromRest = YES;
+    return;
+  }
+  if (![self slot:direction].hasPage) {
+    [_queuedTapTurns removeAllObjects];
+    return;
   }
   NSString *fn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
   RNCPageCurlLog(@"[page-curl] tap turn toward %@ not curled (state=%@); %@", direction, RNCPageCurlStateName(_machine.state), fn);
   [self callBridge:fn argument:nil completion:^(BOOL ok, id result) {}];
+}
+
+// a tap on the blocker while busy: a margin tap queues its turn, any other tap is dropped
+- (void)queueTapTurnAt:(CGPoint)point
+{
+  if (!_hasTapZones || _webView == nil || _hostView == nil) {
+    return;
+  }
+  CGFloat x = [_hostView convertPoint:point toView:_webView].x;
+  NSString *direction = x <= _tapZoneLeft ? RNCPageCurlSlotPrevious : x >= _tapZoneRight ? RNCPageCurlSlotNext : nil;
+  if (direction == nil) {
+    return;
+  }
+  [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+  [self queueTapTurn:direction];
+}
+
+// a tap the other way takes back the last one still waiting
+- (void)queueTapTurn:(NSString *)direction
+{
+  NSString *last = _queuedTapTurns.lastObject;
+  if (last != nil && ![last isEqualToString:direction]) {
+    [_queuedTapTurns removeLastObject];
+  } else if (_queuedTapTurns.count < RNCPageCurlMaxQueuedTapTurns) {
+    [_queuedTapTurns addObject:direction];
+  }
+  RNCPageCurlLog(@"[page-curl] tap turn toward %@ queued while %@; queue=%@", direction, RNCPageCurlStateName(_machine.state),
+                 [_queuedTapTurns componentsJoinedByString:@","]);
+}
+
+- (void)runQueuedTapTurn
+{
+  if (_queuedTapTurns.count == 0 || [self busy]) {
+    return;
+  }
+  NSString *direction = _queuedTapTurns.firstObject;
+  [_queuedTapTurns removeObjectAtIndex:0];
+  [self curlTapTurn:direction duration:[self tune:@"queuedTapTurnDuration"]];
 }
 
 #pragma mark - effects
@@ -1006,7 +1101,7 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
         [self enterState:effect.state reason:effect.reason];
         break;
       case RNCPageCurlEffectBake:
-        [self runBakeWithSettle:effect.settle];
+        [self runBakeWithSettle:effect.settle onlyToward:effect.direction];
         break;
       case RNCPageCurlEffectBlankSlots:
         [self blankAllSlots];
@@ -1040,6 +1135,13 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     _renderer.hidden = YES;
     [self emit:@"ready" direction:nil detail:reason];
     [self beginTurnForPan];
+    if (_queuedTapTurns.count > 0) {
+      // after the effects that led here have all run
+      __weak __typeof(self) weakSelf = self;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf runQueuedTapTurn];
+      });
+    }
   }
 }
 
@@ -1055,7 +1157,12 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
     if (strongSelf == nil || teardownCount != strongSelf->_teardownCount) {
       return;
     }
-    [strongSelf apply:[strongSelf->_machine landingFinished:ok]];
+    // the manager answers NO when it refused the turn (text selected); older content frames answer nothing
+    BOOL refused = [result isKindOfClass:[NSNumber class]] && ![result boolValue];
+    if (refused) {
+      [strongSelf->_queuedTapTurns removeAllObjects];
+    }
+    [strongSelf apply:[strongSelf->_machine landingFinished:ok && !refused]];
   }];
   // only the manager's settle leaves this state; say so if it has not come
   NSUInteger serial = _machine.stateSerial;
@@ -1114,6 +1221,7 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
   [self beginTurn:dx < 0 ? RNCPageCurlSlotNext : RNCPageCurlSlotPrevious from:touchDown];
   _turnDeclined = _turnDirection == nil;
   if (_turnDirection != nil) {
+    [_queuedTapTurns removeAllObjects];
     [self moveTurnTo:location];
   }
 }

@@ -36,7 +36,9 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
 {
   switch (self.kind) {
     case RNCPageCurlEffectEnterState: return [NSString stringWithFormat:@"enter %@ (%@)", RNCPageCurlStateName(self.state), self.reason];
-    case RNCPageCurlEffectBake: return [NSString stringWithFormat:@"bake page %@ chunk %@", self.settle[@"page"], self.settle[@"chunkIndex"]];
+    case RNCPageCurlEffectBake:
+      return [NSString stringWithFormat:@"bake page %@ chunk %@%@", self.settle[@"page"], self.settle[@"chunkIndex"],
+              self.direction ? [NSString stringWithFormat:@", only the %@ slot", self.direction] : @""];
     case RNCPageCurlEffectBlankSlots: return @"blank slots";
     case RNCPageCurlEffectShowLandedPage: return [NSString stringWithFormat:@"show landed %@", self.direction];
     case RNCPageCurlEffectShowCurrentPage: return @"show current page";
@@ -56,6 +58,8 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
   NSDictionary *_bakedSettle;
   // after a landed turn, a settle naming the page just left is from before the landing
   BOOL _awaitingLanding;
+  // the turn that rotated the slots since the last bake; nil once they no longer match their pages
+  NSString *_landedDirection;
   NSUInteger _failedBakes;
   NSUInteger _settleRequestToken;
   NSUInteger _settleRequestSerial;
@@ -126,13 +130,30 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
 
 - (void)bake:(NSDictionary *)settle into:(NSMutableArray<RNCPageCurlEffect *> *)effects
 {
+  NSString *onlyToward = [self rotatedSlotsStillFit:settle] ? _landedDirection : nil;
   _keptSettle = nil;
   _awaitingLanding = NO;
+  _landedDirection = nil;
   _bakedSettle = settle;
   [self setState:RNCPageCurlStateBaking reason:@"settle" into:effects];
   RNCPageCurlEffect *effect = [RNCPageCurlEffect effectOfKind:RNCPageCurlEffectBake];
   effect.settle = settle;
+  effect.direction = onlyToward;
   [effects addObject:effect];
+}
+
+// the landed turn moved one page within the chunk and nothing on the page has changed since the last bake
+- (BOOL)rotatedSlotsStillFit:(NSDictionary *)settle
+{
+  NSDictionary *baked = _bakedSettle;
+  id revision = settle[@"revision"];
+  if (_landedDirection == nil || baked == nil || revision == nil || ![revision isEqual:baked[@"revision"]]) {
+    return NO;
+  }
+  NSInteger step = [_landedDirection isEqualToString:@"next"] ? 1 : -1;
+  return [settle[@"chunkIndex"] integerValue] == [baked[@"chunkIndex"] integerValue] &&
+      [settle[@"totalPages"] integerValue] == [baked[@"totalPages"] integerValue] &&
+      [settle[@"page"] integerValue] == [baked[@"page"] integerValue] + step;
 }
 
 // the kept settle starts the next bake under the same cover; with none the machine rests
@@ -170,6 +191,7 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
   _keptSettle = nil;
   _bakedSettle = nil;
   _awaitingLanding = NO;
+  _landedDirection = nil;
   _failedBakes = 0;
   // nothing is baked yet; the manager's first settle starts the first bake
   [self setState:RNCPageCurlStateAwaitingSettle reason:@"enabled" into:effects];
@@ -183,6 +205,7 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
   _keptSettle = nil;
   _bakedSettle = nil;
   _awaitingLanding = NO;
+  _landedDirection = nil;
   _failedBakes = 0;
 }
 
@@ -256,11 +279,12 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
     [self bakeKeptOrIdle:@"turn cancelled" into:effects];
     return effects;
   }
-  // the cover shows the landed page; the manager turns to it and its settle bakes every slot again
+  // the cover shows the landed page; the manager turns to it and its settle bakes the slot that fell off
   [effects addObject:[self directed:RNCPageCurlEffectShowLandedPage toward:direction]];
   // a settle from during the turn describes the page just left; the landing produces a fresh one
   _keptSettle = nil;
   _awaitingLanding = YES;
+  _landedDirection = [direction copy];
   [self setState:RNCPageCurlStateAwaitingSettle reason:@"turn landed" into:effects];
   [effects addObject:[self directed:RNCPageCurlEffectLand toward:direction]];
   return effects;
@@ -281,6 +305,7 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
     return effects;
   }
   // the slots describe another page now
+  _landedDirection = nil;
   [effects addObject:[RNCPageCurlEffect effectOfKind:RNCPageCurlEffectBlankSlots]];
   if (_keptSettle != nil) {
     [self bake:_keptSettle into:effects];
@@ -306,6 +331,7 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
   }
   // the webview never moved, so the settle it sends names the page the turn started on
   _awaitingLanding = NO;
+  _landedDirection = nil;
   [self awaitSettleIfResting:@"landing failed" into:effects];
   [self requestSettleInto:effects];
   return effects;
@@ -319,6 +345,7 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
     return effects;
   }
   // no settle is coming: open input with nothing to curl onto until the manager settles on its own
+  _landedDirection = nil;
   [effects addObject:[RNCPageCurlEffect effectOfKind:RNCPageCurlEffectBlankSlots]];
   [self setState:RNCPageCurlStateIdle reason:@"settle request failed" into:effects];
   return effects;
@@ -328,6 +355,7 @@ NSString *RNCPageCurlStateName(RNCPageCurlState state)
 {
   NSMutableArray<RNCPageCurlEffect *> *effects = [NSMutableArray array];
   // a busy machine needs nothing more: the settle that comes back is kept and baked when it frees
+  _landedDirection = nil;
   [self awaitSettleIfResting:reason into:effects];
   [self requestSettleInto:effects];
   return effects;
