@@ -20,7 +20,8 @@ FOUNDATION_EXPORT NSString *RNCPageCurlStateName(RNCPageCurlState state);
 typedef NS_ENUM(NSInteger, RNCPageCurlEffectKind) {
   // the state changed; `state` and `reason`
   RNCPageCurlEffectEnterState,
-  // snapshot every slot around the page `settle` names, then report bakeFinished:
+  // snapshot the slots around the page `settle` names, then report bakeFinished:; with a `direction`, only
+  // the slot beyond the page in that direction, since the turn there already rotated the other two
   RNCPageCurlEffectBake,
   // the slots describe another page: no direction curls until the next bake
   RNCPageCurlEffectBlankSlots,
