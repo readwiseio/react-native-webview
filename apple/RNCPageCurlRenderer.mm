@@ -86,6 +86,11 @@ static float tightness(float R, constant Uniforms &u) {
   return (1.0 - u.tightFade) + u.tightFade * clamp(R / max(u.radiusMax, 1.0), 0.0, 1.0);
 }
 
+// snapshots are premultiplied, so a page caught mid-fade composites over the paper the way the screen does
+static float3 overPaper(float4 sample, constant Uniforms &u) {
+  return sample.rgb + (1.0 - sample.a) * u.paperColor.rgb;
+}
+
 // the folded-over edge shadows what lies under it; it softens as the bend flattens but keeps a floor
 // so it does not vanish before the sheet has landed
 static float castShadow(float distanceOutside, float R, constant Uniforms &u) {
@@ -147,19 +152,19 @@ fragment float4 sheetFragment(VOut in [[stage_in]],
   if (frontFacing) {
     float fu = u.mirrored > 0.5 ? 1.0 - in.uv.x : in.uv.x;
     float2 tc = u.frontTexRect.xy + float2(fu, in.uv.y) * u.frontTexRect.zw;
-    color = u.hasFront > 0.5 ? front.sample(smp, tc).rgb : u.paperColor.rgb;
+    color = u.hasFront > 0.5 ? overPaper(front.sample(smp, tc), u) : u.paperColor.rgb;
   } else {
     float bu = u.mirrored > 0.5 ? in.uv.x : 1.0 - in.uv.x;
     float2 tc = u.backTexRect.xy + float2(bu, in.uv.y) * u.backTexRect.zw;
     if (u.hasBack > 0.5) {
-      color = back.sample(smp, tc).rgb;
+      color = overPaper(back.sample(smp, tc), u);
     } else {
       color = u.backColor.rgb;
       if (u.hasFront > 0.5) {
         // the paper is slightly translucent: the front shows through faintly, mirrored, as its
         // deviation from the paper colour
         float fu = u.mirrored > 0.5 ? 1.0 - in.uv.x : in.uv.x;
-        float3 ink = front.sample(smp, u.frontTexRect.xy + float2(fu, in.uv.y) * u.frontTexRect.zw).rgb;
+        float3 ink = overPaper(front.sample(smp, u.frontTexRect.xy + float2(fu, in.uv.y) * u.frontTexRect.zw), u);
         color = clamp(color - u.backShowThrough * (u.paperColor.rgb - ink), 0.0, 1.0);
       }
     }
@@ -209,7 +214,7 @@ fragment float4 underFragment(VOut in [[stage_in]],
                               sampler smp [[sampler(0)]],
                               constant Uniforms &u [[buffer(1)]]) {
   float2 tc = u.frontTexRect.xy + in.uv * u.frontTexRect.zw;
-  float3 color = u.hasFront > 0.5 ? tex.sample(smp, tc).rgb : u.paperColor.rgb;
+  float3 color = u.hasFront > 0.5 ? overPaper(tex.sample(smp, tc), u) : u.paperColor.rgb;
   if (u.curling > 0.5 && u.radius > 0.0) {
     float R = u.radius;
     float sp = dot(in.local - u.axisOrigin, u.axisNormal);
