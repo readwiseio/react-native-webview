@@ -24,6 +24,7 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"grabFloor": @0.3,
     @"sweepGain": @2,
     @"settleGain": @2,
+    @"unfoldCatchUp": @200,
     @"tiltSoftness": @120,
     @"castWidthFloor": @0.5,
     @"castWidthPerRadius": @0.9,
@@ -1318,12 +1319,19 @@ static CGFloat RNCPageCurlEaseInOut(CGFloat t)
   return CGPointMake(-_turnStart.x + skipped, _turnStart.y);
 }
 
-// the grabbed point follows the finger 1:1
+// the grabbed point follows the finger 1:1; a sheet being unfolded rests a whole turn behind the finger,
+// so it first closes that gap over unfoldCatchUp pt of travel, or less when the finger has less room
 - (void)moveTurnTo:(CGPoint)location
 {
   CGPoint local = CGPointMake([self localXFor:location.x], location.y - _turnSheetRect.origin.y);
   _turnDrag = _turnReversed ? local.x - _turnTouchDown.x : _turnTouchDown.x - local.x;
-  CGPoint finger = CGPointMake(_turnRest.x + local.x - _turnTouchDown.x, _turnRest.y + local.y - _turnTouchDown.y);
+  CGFloat catchUp = 0;
+  if (_turnReversed) {
+    CGFloat room = _turnSheetRect.size.width - _turnTouchDown.x;
+    CGFloat over = MIN(MAX([self tune:@"unfoldCatchUp"], 1), MAX(room, 1));
+    catchUp = (_turnTouchDown.x - _turnRest.x) * MIN(MAX(_turnDrag, 0) / over, 1);
+  }
+  CGPoint finger = CGPointMake(_turnRest.x + local.x - _turnTouchDown.x + catchUp, _turnRest.y + local.y - _turnTouchDown.y);
   finger.x = MIN(MAX(finger.x, [self turnedFinger].x), _turnStart.x);
   finger.y = MIN(MAX(finger.y, 0), _turnSheetRect.size.height);
   [self applyFinger:finger];
