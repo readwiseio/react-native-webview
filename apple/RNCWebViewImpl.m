@@ -1393,6 +1393,17 @@ RCTAutoInsetsProtocol>
   }
 }
 
+- (void)setTextInteractionEnabled:(BOOL)textInteractionEnabled
+{
+  _textInteractionEnabled = textInteractionEnabled;
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140500 /* iOS 14.5 */
+  if (@available(iOS 14.5, *)) {
+    // the configuration getter returns a copy, but the copy shares the live webview's preferences
+    _webView.configuration.preferences.textInteractionEnabled = textInteractionEnabled;
+  }
+#endif
+}
+
 #endif // !TARGET_OS_OSX
 
 - (void)postMessage:(NSString *)message
