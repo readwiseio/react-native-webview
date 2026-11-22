@@ -1,8 +1,16 @@
 #import "RNCWebViewPageCurl.h"
 #import "RNCPageCurlRenderer.h"
+#import "RNCPageCurlStateMachine.h"
 #import <UIKit/UIGestureRecognizerSubclass.h>
 
 BOOL RNCPageCurlLoggingEnabled = NO;
+// holds at least this long carry an intent of their own (select, lift a link); shorter ones are tap decoration
+static const NSTimeInterval RNCPageCurlIntentHoldSeconds = 0.3;
+// the content frame's own tap rule: shorter than this and still
+static const NSTimeInterval RNCPageCurlTapSeconds = 0.3;
+static const NSUInteger RNCPageCurlMaxQueuedTapTurns = 16;
+// sheets curling at once after their turns landed; each holds its page bitmaps
+static const NSUInteger RNCPageCurlMaxFlights = 6;
 
 static NSString *const RNCPageCurlSlotCurrent = @"current";
 static NSString *const RNCPageCurlSlotPrevious = @"previous";
@@ -15,6 +23,8 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"radiusFraction": @0.12,
     @"radiusMax": @90,
     @"bendInDistance": @30,
+    @"grabFloor": @0.3,
+    @"sweepGain": @2,
     @"settleGain": @2,
     @"tiltSoftness": @120,
     @"castWidthFloor": @0.5,
@@ -33,6 +43,9 @@ static NSDictionary<NSString *, NSNumber *> *RNCPageCurlTuningDefaults(void)
     @"backShowThrough": @0.15,
     @"completeDistance": @40,
     @"flickVelocity": @400,
+    @"tapTurnDuration": @0.42,
+    @"tapBendInDistance": @300,
+    @"queuedTapTurnDuration": @0.26,
     @"durationBase": @0.18,
     @"durationPerRemaining": @0.32,
     @"speedMin": @0.45,
@@ -59,16 +72,23 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   return 1 - inv * inv * inv;
 }
 
-// Never recognizes; only reports raw touch begin/end so a tap can be told apart from a drag
-// and a still hold can hand the touch back to WebKit's selection recognizers.
+// a turn that starts from rest (a tap) eases in as well as out, instead of leaving at full speed
+static CGFloat RNCPageCurlEaseInOut(CGFloat t)
+{
+  if (t < 0.5) {
+    return 4 * t * t * t;
+  }
+  CGFloat inv = -2 * t + 2;
+  return 1 - inv * inv * inv / 2;
+}
+
+// Never recognizes; only reports raw touch begin/end so a tap can be told apart from a drag.
 @interface RNCPageCurlTouchObserver : UIGestureRecognizer
 @property (nonatomic, copy) void (^onTouchesBegan)(void);
 @property (nonatomic, copy) void (^onTouchesEnded)(void);
-@property (nonatomic, copy) void (^onHeldStill)(void);
 @property (nonatomic, assign) CGPoint startPoint;
 @property (nonatomic, assign) CFTimeInterval startTime;
 @property (nonatomic, assign) BOOL moved;
-@property (nonatomic, assign) NSUInteger touchSequence;
 // the first finger down; later fingers are ignored until it lifts
 @property (nonatomic, weak) UITouch *touch;
 @end
@@ -85,16 +105,6 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   self.startPoint = [self.touch locationInView:self.view];
   self.startTime = CACurrentMediaTime();
   self.moved = NO;
-  self.touchSequence += 1;
-  NSUInteger sequence = self.touchSequence;
-  __weak __typeof(self) weakSelf = self;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    __strong __typeof(weakSelf) strongSelf = weakSelf;
-    if (strongSelf != nil && strongSelf.touchSequence == sequence && !strongSelf.moved &&
-        strongSelf.state == UIGestureRecognizerStatePossible && strongSelf.onHeldStill) {
-      strongSelf.onHeldStill();
-    }
-  });
   if (self.onTouchesBegan) {
     self.onTouchesBegan();
   }
@@ -108,8 +118,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   CGPoint point = [touch locationInView:self.view];
-  if (fabs(point.x - self.startPoint.x) > 8 || fabs(point.y - self.startPoint.y) > 8) {
+  if (!self.moved && (fabs(point.x - self.startPoint.x) > 8 || fabs(point.y - self.startPoint.y) > 8)) {
     self.moved = YES;
+    RNCPageCurlLog(@"[page-curl] touch moved past 8pt after %.0fms", (CACurrentMediaTime() - self.startTime) * 1000);
   }
 }
 
@@ -159,6 +170,49 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 @implementation RNCPageCurlSlot
 @end
 
+// what a turn's curl depends on besides the finger, in sheet-local coordinates
+typedef struct {
+  CGPoint start;
+  CGSize sheetSize;
+  CGFloat radiusMax;
+  CGFloat bendIn;
+} RNCPageCurlTurnGeometry;
+
+// the curl a finger position gives
+typedef struct {
+  // the grabbed point's folded-over image, before the settle speed-up
+  CGPoint trackedFinger;
+  CGPoint finger;
+  CGPoint curlStart;
+  CGPoint curlFinger;
+  CGFloat radius;
+  CGFloat bendStrength;
+  CGFloat distance;
+  CGFloat room;
+  CGFloat foldOffset;
+  CGFloat foldX;
+  // 0 flat, 1 fully folded over
+  CGFloat fold;
+} RNCPageCurlPose;
+
+// a turn that has landed while its sheet still curls; the sheet finishes the animation on its own
+@interface RNCPageCurlFlight : NSObject
+@property (nonatomic, strong) RNCPageCurlSheet *sheet;
+@property (nonatomic, copy) NSString *direction;
+@property (nonatomic, assign) BOOL reversed;
+// the flat pages of the turn's own scene
+@property (nonatomic, copy) NSArray<RNCPageCurlPage *> *underPages;
+@property (nonatomic, assign) RNCPageCurlTurnGeometry geometry;
+@property (nonatomic, assign) CGPoint from;
+@property (nonatomic, assign) CGPoint to;
+@property (nonatomic, assign) CFTimeInterval startTime;
+@property (nonatomic, assign) CFTimeInterval duration;
+@property (nonatomic, assign) BOOL fromRest;
+@end
+
+@implementation RNCPageCurlFlight
+@end
+
 @interface RNCWebViewPageCurl () <UIGestureRecognizerDelegate>
 @end
 
@@ -166,6 +220,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   __weak UIView *_hostView;
   __weak WKWebView *_webView;
   RNCPageCurlRenderer *_renderer;
+  // sits above the renderer and swallows every touch while the controller is not idle; the curl pan
+  // and touch observer live on the host, so they still see the finger through it
+  UIView *_inputBlocker;
   NSMutableDictionary<NSString *, RNCPageCurlSlot *> *_slots;
   UIPanGestureRecognizer *_pan;
   RNCPageCurlTouchObserver *_touchObserver;
@@ -173,23 +230,25 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   NSDictionary<NSString *, NSNumber *> *_tuningValues;
   BOOL _enabled;
   BOOL _spread;
-  BOOL _turnInFlight;
   BOOL _edgeEmitted;
-  // curls are allowed only between a finished bake cycle and the next page change
-  BOOL _ready;
-  // a bake cycle is moving the webview under the renderer
-  BOOL _cycleRunning;
-  // bumped by every new cycle and by teardown; a cycle that finds it changed stops at its next step
-  NSUInteger _cycleGeneration;
-  // the renderer must stay visible: a cycle is running, or a turn crossed the chunk edge
-  // and the settle that follows will rebake
-  BOOL _coverHeld;
-  // the manager is moving the webview itself; nothing unlocks before its settle
-  BOOL _awaitingSettle;
-  // a margin tap turned the page in the webview; not ready until the manager reports
-  BOOL _awaitingTapResult;
-  // a settle arrived during a turn; once the turn is over the manager is asked to settle again
-  BOOL _settlePending;
+  // the bake loop; the controller reports what happened and carries out the effects it returns
+  RNCPageCurlStateMachine *_machine;
+  // a margin tap the manager handed over, curled once that tap's own touchEnd has come in
+  NSString *_pendingTapTurn;
+  // margin taps that came in while busy, turned one after another once idle
+  NSMutableArray<NSString *> *_queuedTapTurns;
+  // the manager's margin tap zones in webview points; a busy controller reads taps on its blocker with them
+  BOOL _hasTapZones;
+  CGFloat _tapZoneLeft;
+  CGFloat _tapZoneRight;
+  BOOL _touchHitBlocker;
+  NSHashTable<UIGestureRecognizer *> *_knownHolds;
+  // UIKit hit-tests once, at touch-down; only a touch it delivered inside the webview is one the
+  // manager saw and will answer
+  BOOL _touchReachedWebView;
+  // a bake step still in flight from a torn-down controller stops; setSpine tears down and re-enables,
+  // which _enabled alone cannot tell apart
+  NSUInteger _teardownCount;
   // the page the webview rests on; pages count from 0 inside the chunk
   NSInteger _page;
   NSInteger _lastPage;
@@ -215,12 +274,18 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL _turnReversed;
   // this pan asked for a direction with no page; stop asking until it ends
   BOOL _turnDeclined;
+  // the flat pages of the turn's own scene, before the flying sheets are stacked on it
+  NSArray<RNCPageCurlPage *> *_turnUnderPages;
+  // landed turns whose sheets still curl, oldest first; all turn the same way
+  NSMutableArray<RNCPageCurlFlight *> *_flights;
+  CADisplayLink *_flightLink;
   CADisplayLink *_animation;
   CFTimeInterval _animationStart;
   CFTimeInterval _animationDuration;
   CGPoint _animationFrom;
   CGPoint _animationTo;
   BOOL _animationCompletes;
+  BOOL _animationFromRest;
 }
 
 - (instancetype)initWithHostView:(UIView *)hostView webView:(WKWebView *)webView
@@ -228,6 +293,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if ((self = [super init])) {
     _hostView = hostView;
     _webView = webView;
+    _machine = [RNCPageCurlStateMachine new];
+    _queuedTapTurns = [NSMutableArray array];
+    _flights = [NSMutableArray array];
     _slots = [NSMutableDictionary dictionary];
     for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
       _slots[slot] = [RNCPageCurlSlot new];
@@ -417,9 +485,16 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _renderer = [[RNCPageCurlRenderer alloc] initWithFrame:host.bounds];
   _renderer.hidden = YES;
   [host addSubview:_renderer];
+  _inputBlocker = [[UIView alloc] initWithFrame:host.bounds];
+  _inputBlocker.backgroundColor = [UIColor clearColor];
+  _inputBlocker.hidden = YES;
+  [host addSubview:_inputBlocker];
   [self applyColors];
   [self applyTuning];
   [self showCover];
+  [self apply:[_machine enable]];
+  // the manager hands margin taps over only once it knows this controller curls them
+  [self callBridge:@"nativePageCurlAnimateTaps" argument:nil completion:^(BOOL ok, id result) {}];
 
   __weak __typeof(self) weakSelf = self;
   _touchObserver = [RNCPageCurlTouchObserver new];
@@ -431,9 +506,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     if (strongSelf == nil) {
       return;
     }
-    RNCPageCurlLog(@"[page-curl] touches began; ready=%d", strongSelf->_ready);
-    // a new touch supersedes the previous tap; its own touch end decides again
-    strongSelf->_awaitingTapResult = NO;
+    UIView *hit = strongSelf->_touchObserver.touch.view;
+    strongSelf->_touchReachedWebView = hit != nil && strongSelf->_webView != nil && [hit isDescendantOfView:strongSelf->_webView];
+    strongSelf->_touchHitBlocker = hit != nil && hit == strongSelf->_inputBlocker;
+    RNCPageCurlLog(@"[page-curl] touches began; state=%@ reachedWebView=%d", RNCPageCurlStateName(strongSelf->_machine.state), strongSelf->_touchReachedWebView);
     [strongSelf makeWebPansYieldToCurl];
     [strongSelf emit:@"touch" direction:nil detail:nil];
   };
@@ -443,30 +519,21 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
       return;
     }
     BOOL moved = strongSelf->_touchObserver.moved;
-    RNCPageCurlLog(@"[page-curl] touches ended; moved=%d inFlight=%d ready=%d", moved, strongSelf->_turnInFlight, strongSelf->_ready);
-    if (!moved && !strongSelf->_turnInFlight) {
-      // the manager reports a margin tap as a settle, or as a touch end without a page change
-      strongSelf->_awaitingTapResult = YES;
-      [strongSelf markNotReady:@"tap"];
+    RNCPageCurlLog(@"[page-curl] touches ended; moved=%d state=%@ reachedWebView=%d", moved, RNCPageCurlStateName(strongSelf->_machine.state),
+                   strongSelf->_touchReachedWebView);
+    if (!moved && strongSelf->_touchReachedWebView && strongSelf->_machine.state == RNCPageCurlStateIdle) {
+      [strongSelf apply:[strongSelf->_machine tapped]];
       [strongSelf emit:@"tap" direction:nil detail:nil];
-    }
-  };
-  _touchObserver.onHeldStill = ^{
-    __strong __typeof(weakSelf) strongSelf = weakSelf;
-    if (strongSelf == nil || strongSelf->_pan == nil) {
       return;
     }
-    // a still hold is a text-selection intent, not a page drag: fail the curl pan so
-    // WebKit's long-press recognizers (which now wait on it) can proceed
-    if (strongSelf->_pan.state == UIGestureRecognizerStatePossible) {
-      RNCPageCurlLog(@"[page-curl] held still for 350ms; releasing the curl pan for this touch");
-      strongSelf->_pan.enabled = NO;
-      strongSelf->_pan.enabled = YES;
-      [strongSelf hideIfIdle];
+    BOOL quick = CACurrentMediaTime() - strongSelf->_touchObserver.startTime < RNCPageCurlTapSeconds;
+    if (!moved && quick && strongSelf->_touchHitBlocker) {
+      [strongSelf queueTapTurnAt:strongSelf->_touchObserver.startPoint];
     }
   };
   [host addGestureRecognizer:_touchObserver];
 
+  _knownHolds = [NSHashTable weakObjectsHashTable];
   _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
   _pan.maximumNumberOfTouches = 1;
   _pan.delegate = self;
@@ -476,7 +543,10 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 }
 
 // touch scrolling off in every scroll view inside the webview (rescanned at each touch-down: WebKit
-// adds more as chunks load) and its pans wait for the curl pan; not undone, the caller remounts
+// adds more as chunks load) and its pans wait for the curl pan; not undone, the caller remounts.
+// The curl pan itself waits for WebKit's long holds (the selection loupe at 0.5s, link lift at
+// 0.65s): a hold fails as soon as the finger moves, so a drag still curls at once, and a still
+// finger selects. The short holds (tap highlight at 0.12s) keep waiting on the pan like the pans do
 - (void)makeWebPansYieldToCurl
 {
   if (_webView == nil || _pan == nil) {
@@ -484,6 +554,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:_webView];
   NSUInteger recognizers = 0;
+  NSUInteger holds = 0;
   NSUInteger scrollViews = 0;
   while (stack.count > 0) {
     UIView *view = stack.lastObject;
@@ -496,17 +567,27 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
       }
     }
     for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
-      BOOL isPan = [recognizer isKindOfClass:[UIPanGestureRecognizer class]];
-      BOOL isLongPress = [recognizer isKindOfClass:[UILongPressGestureRecognizer class]];
-      if ((isPan || isLongPress) && recognizer != _pan) {
+      if (recognizer == _pan) {
+        continue;
+      }
+      UILongPressGestureRecognizer *hold = [recognizer isKindOfClass:[UILongPressGestureRecognizer class]] ? (UILongPressGestureRecognizer *)recognizer : nil;
+      if (hold != nil && hold.minimumPressDuration >= RNCPageCurlIntentHoldSeconds) {
+        if (![_knownHolds containsObject:hold]) {
+          [_knownHolds addObject:hold];
+          RNCPageCurlLog(@"[page-curl] curl pan waits on %@ (%.2fs, %.0fpt)", NSStringFromClass([hold class]), hold.minimumPressDuration,
+                hold.allowableMovement);
+        }
+        [_pan requireGestureRecognizerToFail:hold];
+        holds += 1;
+      } else if (hold != nil || [recognizer isKindOfClass:[UIPanGestureRecognizer class]]) {
         [recognizer requireGestureRecognizerToFail:_pan];
         recognizers += 1;
       }
     }
     [stack addObjectsFromArray:view.subviews];
   }
-  RNCPageCurlLog(@"[page-curl] web scrolling off: %lu scroll views changed, %lu recognizers yield to the curl pan",
-        (unsigned long)scrollViews, (unsigned long)recognizers);
+  RNCPageCurlLog(@"[page-curl] web scrolling off: %lu scroll views changed, %lu recognizers yield to the curl pan, which waits on %lu holds",
+        (unsigned long)scrollViews, (unsigned long)recognizers, (unsigned long)holds);
 }
 
 - (void)setSpine:(NSString *)spine
@@ -526,20 +607,23 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 // bakes no longer match the page; the manager settles again once the page has painted
 - (void)requestRebake:(NSString *)reason
 {
-  RNCPageCurlLog(@"[page-curl] rebake requested (%@)", reason);
-  [self markNotReady:reason];
-  [self callBridge:@"invalidate" argument:nil completion:^(BOOL ok, id result) {}];
+  RNCPageCurlLog(@"[page-curl] rebake requested (%@) state=%@", reason, RNCPageCurlStateName(_machine.state));
+  [self dropFlights];
+  [self apply:[_machine rebakeRequested:reason]];
 }
 
 - (void)teardown
 {
   RNCPageCurlLog(@"[page-curl] teardown");
   _enabled = NO;
-  _cycleGeneration += 1;
+  _teardownCount += 1;
+  [_machine teardown];
   [self stopAnimation];
+  [self dropFlights];
   if (_pan != nil) {
     [_pan.view removeGestureRecognizer:_pan];
     _pan = nil;
+    _knownHolds = nil;
   }
   if (_touchObserver != nil) {
     [_touchObserver.view removeGestureRecognizer:_touchObserver];
@@ -547,15 +631,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   [_renderer removeFromSuperview];
   _renderer = nil;
-  _turnInFlight = NO;
+  [_inputBlocker removeFromSuperview];
+  _inputBlocker = nil;
   _turnDirection = nil;
+  _pendingTapTurn = nil;
+  [_queuedTapTurns removeAllObjects];
+  _hasTapZones = NO;
   _edgeEmitted = NO;
-  _ready = NO;
-  _cycleRunning = NO;
-  _coverHeld = NO;
-  _awaitingSettle = NO;
-  _awaitingTapResult = NO;
-  _settlePending = NO;
 }
 
 - (void)layoutWithBounds:(CGRect)bounds
@@ -564,6 +646,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   _renderer.frame = bounds;
+  _inputBlocker.frame = bounds;
   BOOL resized = !CGSizeEqualToSize(_lastSize, CGSizeZero) && !CGSizeEqualToSize(_lastSize, bounds.size);
   _lastSize = bounds.size;
   if (resized) {
@@ -620,6 +703,13 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self slot:name].hasPage = YES;
 }
 
+- (void)blankAllSlots
+{
+  for (NSString *slot in @[RNCPageCurlSlotPrevious, RNCPageCurlSlotCurrent, RNCPageCurlSlotNext]) {
+    [self blankSlot:slot];
+  }
+}
+
 #pragma mark - scenes
 
 - (CGRect)fullTexRect
@@ -649,15 +739,59 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   return CGRectMake(bounds.size.width / 2, 0, bounds.size.width / 2, bounds.size.height);
 }
 
-// the current bake, flat, covering the whole view
-- (void)showCover
+- (NSArray<RNCPageCurlPage *> *)coverPages
 {
   RNCPageCurlSlot *current = [self slot:RNCPageCurlSlotCurrent];
-  _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+  return @[[RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+}
+
+// the current bake, flat, covering the whole view, under any sheets still curling
+- (void)showCover
+{
   _renderer.sheet = nil;
   _renderer.sheetBackTexture = nil;
   _renderer.curling = NO;
+  [self composeScene];
   [_renderer draw];
+}
+
+// stacks the sheets the way paper lies: on their own side of the spine the older is on top, past it the newer
+// lands on top, and a single sheet turning back lays each newer page over the last
+- (void)composeScene
+{
+  if (_renderer == nil) {
+    return;
+  }
+  BOOL hasTurn = _turnDirection != nil;
+  if (_flights.count == 0) {
+    _renderer.flyingSheets = nil;
+    _renderer.sheetLayer = 0;
+    _renderer.sheetLayerPastSpine = 0;
+    _renderer.underPages = hasTurn ? _turnUnderPages : [self coverPages];
+    return;
+  }
+  RNCPageCurlFlight *oldest = _flights.firstObject;
+  BOOL reversed = oldest.reversed;
+  NSUInteger count = _flights.count + (hasTurn ? 1 : 0);
+  NSMutableArray<RNCPageCurlSheet *> *sheets = [NSMutableArray array];
+  [_flights enumerateObjectsUsingBlock:^(RNCPageCurlFlight *flight, NSUInteger index, BOOL *stop) {
+    flight.sheet.layer = reversed ? index : count - 1 - index;
+    flight.sheet.layerPastSpine = index;
+    [sheets addObject:flight.sheet];
+  }];
+  _renderer.flyingSheets = sheets;
+  _renderer.sheetLayer = reversed ? count - 1 : 0;
+  _renderer.sheetLayerPastSpine = count - 1;
+  // the flat pages come from the turns that still uncover them
+  NSArray<RNCPageCurlPage *> *oldestUnder = oldest.underPages;
+  NSArray<RNCPageCurlPage *> *newestUnder = hasTurn ? _turnUnderPages : _flights.lastObject.underPages;
+  if (!_spread || oldestUnder.count < 2 || newestUnder.count < 2) {
+    _renderer.underPages = reversed ? oldestUnder : newestUnder;
+  } else if ([oldest.direction isEqualToString:RNCPageCurlSlotNext]) {
+    _renderer.underPages = @[oldestUnder[0], newestUnder[1]];
+  } else {
+    _renderer.underPages = @[newestUnder[0], oldestUnder[1]];
+  }
 }
 
 // pages of the turn toward `direction`: what lies underneath, the sheet and what is on its back
@@ -671,15 +805,15 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _renderer.mirrored = _turnMirrored;
   if (!_spread) {
     if (next) {
-      _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:target.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+      _turnUnderPages = @[[RNCPageCurlPage pageWithTexture:target.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
       _renderer.sheet = [RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]];
     } else {
-      _renderer.underPages = @[[RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
+      _turnUnderPages = @[[RNCPageCurlPage pageWithTexture:current.texture rect:_renderer.bounds texRect:[self fullTexRect]]];
       _renderer.sheet = [RNCPageCurlPage pageWithTexture:target.texture rect:_renderer.bounds texRect:[self fullTexRect]];
     }
     _renderer.sheetBackTexture = nil;
   } else if (next) {
-    _renderer.underPages = @[
+    _turnUnderPages = @[
       [RNCPageCurlPage pageWithTexture:current.texture rect:[self leftHalf] texRect:[self leftTexRect]],
       [RNCPageCurlPage pageWithTexture:target.texture rect:[self rightHalf] texRect:[self rightTexRect]],
     ];
@@ -687,7 +821,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     _renderer.sheetBackTexture = target.texture;
     _renderer.sheetBackTexRect = [self leftTexRect];
   } else {
-    _renderer.underPages = @[
+    _turnUnderPages = @[
       [RNCPageCurlPage pageWithTexture:target.texture rect:[self leftHalf] texRect:[self leftTexRect]],
       [RNCPageCurlPage pageWithTexture:current.texture rect:[self rightHalf] texRect:[self rightTexRect]],
     ];
@@ -697,8 +831,9 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }
   _renderer.curling = YES;
   _turnSheetRect = _renderer.sheet.rect;
+  [self composeScene];
   NSMutableString *scene = [NSMutableString string];
-  for (RNCPageCurlPage *page in _renderer.underPages) {
+  for (RNCPageCurlPage *page in _turnUnderPages) {
     [scene appendFormat:@" under rect=%@ tex=%@ %@;", NSStringFromCGRect(page.rect), NSStringFromCGRect(page.texRect), page.texture ? @"image" : @"paper"];
   }
   [scene appendFormat:@" sheet rect=%@ tex=%@ %@ back=%@ %@", NSStringFromCGRect(_turnSheetRect), NSStringFromCGRect(_renderer.sheet.texRect),
@@ -719,7 +854,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   WKSnapshotConfiguration *config = [WKSnapshotConfiguration new];
   config.afterScreenUpdates = YES;
   CFTimeInterval start = CACurrentMediaTime();
-  NSUInteger generation = _cycleGeneration;
+  NSUInteger teardownCount = _teardownCount;
   __weak __typeof(self) weakSelf = self;
   [webView takeSnapshotWithConfiguration:config completionHandler:^(UIImage *image, NSError *error) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -728,8 +863,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     }
     double ms = (CACurrentMediaTime() - start) * 1000.0;
     RNCPageCurlLog(@"[page-curl] snapshot slot=%@ took %.1fms image=%@ error=%@", slot, ms, NSStringFromCGSize(image.size), error);
-    if (generation != strongSelf->_cycleGeneration) {
-      RNCPageCurlLog(@"[page-curl] snapshot slot=%@ dropped: its cycle was abandoned", slot);
+    if (teardownCount != strongSelf->_teardownCount) {
+      RNCPageCurlLog(@"[page-curl] snapshot slot=%@ dropped: the controller was torn down", slot);
       completion(NO);
       return;
     }
@@ -745,15 +880,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }];
 }
 
-// window.nativePageCurl.<fn>(page) in the content frame; jump resolves once the page painted,
-// commit once the manager recorded the resting page
-- (void)callBridge:(NSString *)fn page:(NSInteger)page completion:(void (^)(BOOL ok))completion
-{
-  [self callBridge:fn argument:@(page) completion:^(BOOL ok, id result) {
-    completion(ok);
-  }];
-}
-
+// window.s.<fn>(argument) in the content frame: the manager's own methods, awaited when they return a promise
 - (void)callBridge:(NSString *)fn argument:(id)argument completion:(void (^)(BOOL ok, id result))completion
 {
   WKWebView *webView = _webView;
@@ -763,8 +890,8 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return;
   }
   NSString *body = [NSString stringWithFormat:
-      @"if (!window.nativePageCurl) { throw new Error('nativePageCurl bridge missing'); }"
-       "return await window.nativePageCurl.%@(argument);", fn];
+      @"if (!window.s || !window.s.%@) { throw new Error('scrolling manager has no %@'); }"
+       "return await window.s.%@(argument);", fn, fn, fn];
   CFTimeInterval start = CACurrentMediaTime();
   [webView callAsyncJavaScript:body
                      arguments:@{@"argument": argument ?: [NSNull null]}
@@ -777,20 +904,19 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }];
 }
 
-#pragma mark - bake cycles
+#pragma mark - bakes
 
 - (RNCPageCurlStep)stepSnapshot:(NSString *)slot
 {
   __weak __typeof(self) weakSelf = self;
-  NSUInteger generation = _cycleGeneration;
   return ^(void (^done)(BOOL)) {
     [weakSelf snapshotIntoSlot:slot completion:^(BOOL ok) {
       __strong __typeof(weakSelf) strongSelf = weakSelf;
-      if (strongSelf == nil || generation != strongSelf->_cycleGeneration) {
+      if (strongSelf == nil) {
         done(NO);
         return;
       }
-      // a failed neighbor bake curls onto blank paper; a failed current bake has no cover to show
+      // a neighbor that failed to bake stays blank and is not curled onto; a failed current bake has no cover to show
       if (!ok && ![slot isEqualToString:RNCPageCurlSlotCurrent]) {
         [strongSelf blankSlot:slot];
         done(YES);
@@ -801,11 +927,14 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   };
 }
 
-- (RNCPageCurlStep)stepBridge:(NSString *)fn page:(NSInteger)page
+// parks the webview on a page of the current chunk; done once that page has painted
+- (RNCPageCurlStep)stepJumpToPage:(NSInteger)page
 {
   __weak __typeof(self) weakSelf = self;
   return ^(void (^done)(BOOL)) {
-    [weakSelf callBridge:fn page:page completion:done];
+    [weakSelf callBridge:@"nativePageCurlJump" argument:@(page) completion:^(BOOL ok, id result) {
+      done(ok);
+    }];
   };
 }
 
@@ -817,13 +946,11 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   };
 }
 
-// a cycle whose generation is no longer current has been superseded by a newer settle or a teardown;
-// it stops without reporting, the newer cycle owns every slot from here
-- (void)runSteps:(NSArray<RNCPageCurlStep> *)steps index:(NSUInteger)index generation:(NSUInteger)generation completion:(void (^)(BOOL ok))completion
+// a bake runs every step to the end; only a teardown stops it, and then it stops without reporting
+- (void)runSteps:(NSArray<RNCPageCurlStep> *)steps index:(NSUInteger)index teardownCount:(NSUInteger)teardownCount completion:(void (^)(BOOL ok))completion
 {
-  if (!_enabled || generation != _cycleGeneration) {
-    RNCPageCurlLog(@"[page-curl] cycle %lu abandoned at step %lu (enabled=%d current=%lu)", (unsigned long)generation, (unsigned long)index, _enabled,
-          (unsigned long)_cycleGeneration);
+  if (teardownCount != _teardownCount) {
+    RNCPageCurlLog(@"[page-curl] bake stopped at step %lu: controller torn down", (unsigned long)index);
     return;
   }
   if (index >= steps.count) {
@@ -836,15 +963,15 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     if (strongSelf == nil) {
       return;
     }
-    if (generation != strongSelf->_cycleGeneration) {
-      RNCPageCurlLog(@"[page-curl] cycle %lu abandoned after step %lu", (unsigned long)generation, (unsigned long)index);
+    if (teardownCount != strongSelf->_teardownCount) {
+      RNCPageCurlLog(@"[page-curl] bake stopped after step %lu: controller torn down", (unsigned long)index);
       return;
     }
     if (!ok) {
       completion(NO);
       return;
     }
-    [strongSelf runSteps:steps index:index + 1 generation:generation completion:completion];
+    [strongSelf runSteps:steps index:index + 1 teardownCount:teardownCount completion:completion];
   });
 }
 
@@ -857,7 +984,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   BOOL exists = next ? page < _lastPage : page > 0;
   BOOL beyondChunk = next ? !_isLastChunk : _chunkIndex > 0;
   if (exists) {
-    [steps addObject:[self stepBridge:@"jump" page:neighbor]];
+    [steps addObject:[self stepJumpToPage:neighbor]];
     [steps addObject:[self stepSnapshot:direction]];
     return;
   }
@@ -868,26 +995,25 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     }]];
     return;
   }
-  // peek, snapshot and unpeek are one step: an abandoned cycle must never leave the manager peeked
-  NSUInteger generation = _cycleGeneration;
+  // peek, snapshot and unpeek are one step, so the manager is never left peeked between steps
   [steps addObject:^(void (^done)(BOOL)) {
-    [weakSelf callBridge:@"peek" argument:direction completion:^(BOOL ok, id result) {
+    [weakSelf callBridge:@"nativePageCurlPeek" argument:direction completion:^(BOOL ok, id result) {
       __strong __typeof(weakSelf) strongSelf = weakSelf;
       if (strongSelf == nil) {
         return;
       }
       if (!ok || ![result isKindOfClass:[NSNumber class]] || ![result boolValue]) {
-        RNCPageCurlLog(@"[page-curl] peek %@ refused; curling onto blank paper", direction);
+        RNCPageCurlLog(@"[page-curl] peek %@ refused; that side stays blank", direction);
         [strongSelf blankSlot:direction];
         done(YES);
         return;
       }
       [strongSelf snapshotIntoSlot:direction completion:^(BOOL snapped) {
         __strong __typeof(weakSelf) innerSelf = weakSelf;
-        if (!snapped && innerSelf != nil && generation == innerSelf->_cycleGeneration) {
+        if (!snapped && innerSelf != nil) {
           [innerSelf blankSlot:direction];
         }
-        [weakSelf callBridge:@"unpeek" argument:nil completion:^(BOOL unpeeked, id unpeekResult) {
+        [weakSelf callBridge:@"nativePageCurlUnpeek" argument:nil completion:^(BOOL unpeeked, id unpeekResult) {
           done(unpeeked);
         }];
       }];
@@ -895,42 +1021,38 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   }];
 }
 
-- (void)finishCycle:(BOOL)ok reason:(NSString *)reason
+// every slot from scratch, or with `onlyToward` just the one beyond the page that a turn there exposed;
+// the settle says which page the webview rests on
+- (void)runBakeWithSettle:(NSDictionary *)settle onlyToward:(NSString *)onlyToward
 {
-  _cycleRunning = NO;
-  _coverHeld = NO;
-  _renderer.hidden = YES;
-  if (!ok) {
-    RNCPageCurlLog(@"[page-curl] cycle failed (%@); locked until the next settle", reason);
-    _ready = NO;
-    return;
-  }
-  [self markReady:reason];
-  [self runPendingSettle];
-}
-
-// every slot from scratch: the reader is on a page native did not curl to
-- (void)runFullCycleWithSettle:(NSDictionary *)settle
-{
-  _settlePending = NO;
+  _edgeEmitted = NO;
   _page = [settle[@"page"] integerValue];
   _lastPage = [settle[@"totalPages"] integerValue];
   _chunkIndex = [settle[@"chunkIndex"] integerValue];
   _isLastChunk = [settle[@"isLastChunk"] boolValue];
-  _cycleRunning = YES;
-  _coverHeld = YES;
-  _awaitingSettle = NO;
-  _awaitingTapResult = NO;
-  _ready = NO;
-  NSUInteger generation = ++_cycleGeneration;
+  NSUInteger teardownCount = _teardownCount;
   CFTimeInterval start = CACurrentMediaTime();
-  RNCPageCurlLog(@"[page-curl] full cycle %lu start page=%ld/%ld chunk=%ld last=%d", (unsigned long)generation, (long)_page, (long)_lastPage, (long)_chunkIndex,
-        _isLastChunk);
+  RNCPageCurlLog(@"[page-curl] bake start page=%ld/%ld chunk=%ld last=%d only=%@", (long)_page, (long)_lastPage, (long)_chunkIndex, _isLastChunk,
+                 onlyToward ?: @"-");
 
   __weak __typeof(self) weakSelf = self;
   NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
-  // an interrupted cycle or a relayout may have left the webview on another page
-  [steps addObject:[self stepBridge:@"jump" page:_page]];
+  if (onlyToward != nil) {
+    [self addNeighborStepsForPage:_page direction:onlyToward to:steps];
+    // also when nothing moved: the baked labels in the page still name the page the last bake ended on
+    [steps addObject:[self stepJumpToPage:_page]];
+    [self runSteps:steps index:0 teardownCount:teardownCount completion:^(BOOL ok) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (strongSelf == nil) {
+        return;
+      }
+      RNCPageCurlLog(@"[page-curl] bake of the %@ slot %@ in %.1fms", onlyToward, ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
+      [strongSelf apply:[strongSelf->_machine bakeFinished:ok]];
+    }];
+    return;
+  }
+  // a relayout may have left the webview on another page
+  [steps addObject:[self stepJumpToPage:_page]];
   [steps addObject:[self stepSnapshot:RNCPageCurlSlotCurrent]];
   [steps addObject:[self stepBlock:^{
     __strong __typeof(weakSelf) strongSelf = weakSelf;
@@ -941,73 +1063,16 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotNext to:steps];
   [self addNeighborStepsForPage:_page direction:RNCPageCurlSlotPrevious to:steps];
   if (moved) {
-    [steps addObject:[self stepBridge:@"jump" page:_page]];
+    [steps addObject:[self stepJumpToPage:_page]];
   }
-  [self runSteps:steps index:0 generation:generation completion:^(BOOL ok) {
+  [self runSteps:steps index:0 teardownCount:teardownCount completion:^(BOOL ok) {
     __strong __typeof(weakSelf) strongSelf = weakSelf;
     if (strongSelf == nil) {
       return;
     }
-    RNCPageCurlLog(@"[page-curl] full cycle %lu %@ in %.1fms", (unsigned long)generation, ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
-    if (ok) {
-      [strongSelf callBridge:@"setReady" argument:@YES completion:^(BOOL sent, id result) {}];
-    }
-    [strongSelf finishCycle:ok reason:@"full cycle"];
+    RNCPageCurlLog(@"[page-curl] bake %@ in %.1fms", ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
+    [strongSelf apply:[strongSelf->_machine bakeFinished:ok]];
   }];
-}
-
-// after a completed curl: the bakes already on screen are kept, only the far neighbor of the
-// new page is fetched, then the webview is parked on the new page and the manager told
-- (void)finishTurnToward:(NSString *)direction
-{
-  BOOL next = [direction isEqualToString:RNCPageCurlSlotNext];
-  NSInteger target = next ? _page + 1 : _page - 1;
-  _ready = NO;
-  _awaitingTapResult = NO;
-  if (target < 0 || target > _lastPage) {
-    // the manager runs its chunk transition and settles when done
-    RNCPageCurlLog(@"[page-curl] turn crossed the chunk edge to page %ld; waiting for the settle", (long)target);
-    _coverHeld = YES;
-    _awaitingSettle = YES;
-    __weak __typeof(self) weakSelf = self;
-    [self callBridge:@"commit" page:target completion:^(BOOL ok) {
-      if (!ok) {
-        [weakSelf finishCycle:NO reason:@"edge commit"];
-      }
-    }];
-    return;
-  }
-  _page = target;
-  _cycleRunning = YES;
-  _coverHeld = YES;
-  NSUInteger generation = ++_cycleGeneration;
-  CFTimeInterval start = CACurrentMediaTime();
-  RNCPageCurlLog(@"[page-curl] turn cycle %lu start page=%ld/%ld", (unsigned long)generation, (long)_page, (long)_lastPage);
-
-  NSMutableArray<RNCPageCurlStep> *steps = [NSMutableArray array];
-  [self addNeighborStepsForPage:_page direction:direction to:steps];
-  [steps addObject:[self stepBridge:@"jump" page:_page]];
-  [steps addObject:[self stepBridge:@"commit" page:_page]];
-  __weak __typeof(self) weakSelf = self;
-  [self runSteps:steps index:0 generation:generation completion:^(BOOL ok) {
-    __strong __typeof(weakSelf) strongSelf = weakSelf;
-    if (strongSelf == nil) {
-      return;
-    }
-    RNCPageCurlLog(@"[page-curl] turn cycle %lu %@ in %.1fms", (unsigned long)generation, ok ? @"done" : @"FAILED", (CACurrentMediaTime() - start) * 1000.0);
-    [strongSelf finishCycle:ok reason:@"turn cycle"];
-  }];
-}
-
-// a settle that arrived during a turn is stale once the turn has changed the page, so it is never
-// replayed: the manager is asked to settle again from wherever it is now
-- (void)runPendingSettle
-{
-  if (!_settlePending || _cycleRunning || _turnInFlight || [self panActive]) {
-    return;
-  }
-  _settlePending = NO;
-  [self requestRebake:@"deferred settle"];
 }
 
 #pragma mark - messages from the content frame
@@ -1015,88 +1080,327 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (void)handleMessage:(NSDictionary *)message
 {
   NSString *type = message[@"type"];
-  RNCPageCurlLog(@"[page-curl] message %@ (ready=%d cycle=%d cover=%d awaiting=%d tap=%d)", message, _ready, _cycleRunning, _coverHeld, _awaitingSettle, _awaitingTapResult);
+  RNCPageCurlLog(@"[page-curl] message %@ (%@)", message, _machine.summary);
   if (_renderer == nil) {
     return;
   }
   if ([type isEqualToString:@"settled"]) {
     [self emit:@"settled" direction:nil detail:[NSString stringWithFormat:@"page %@/%@ chunk %@", message[@"page"], message[@"totalPages"], message[@"chunkIndex"]]];
-    _ready = NO;
-    if (_turnInFlight || [self panActive]) {
-      RNCPageCurlLog(@"[page-curl] settle deferred: a turn is in flight");
-      _settlePending = YES;
-      return;
-    }
-    if (_cycleRunning) {
-      // the running cycle bakes a page the manager has moved away from; the new settle takes over
-      RNCPageCurlLog(@"[page-curl] settle supersedes the running cycle");
-    }
-    [self runFullCycleWithSettle:message];
+    [self apply:[_machine settled:message]];
     return;
   }
   if ([type isEqualToString:@"unsettled"]) {
-    _awaitingSettle = YES;
-    _awaitingTapResult = NO;
-    [self markNotReady:@"unsettled"];
+    [self apply:[_machine unsettled]];
     return;
   }
-  if ([type isEqualToString:@"chunkFade"]) {
-    // after a turn onto blank paper the cover drops so the manager's chunk fade shows; a turn onto
-    // the baked edge page keeps its cover, which the rebake after the settle matches
-    if (_awaitingSettle && !_cycleRunning && !_turnInFlight && [self slot:RNCPageCurlSlotCurrent].texture == nil) {
-      RNCPageCurlLog(@"[page-curl] chunk fade: uncovering the webview");
-      _coverHeld = NO;
-      _renderer.hidden = YES;
-    }
+  if ([type isEqualToString:@"tapTurn"]) {
+    _pendingTapTurn = [message[@"direction"] isEqualToString:@"previous"] ? RNCPageCurlSlotPrevious : RNCPageCurlSlotNext;
     return;
   }
   if ([type isEqualToString:@"touchEnd"]) {
-    if (!_awaitingTapResult) {
-      return;
-    }
-    _awaitingTapResult = NO;
-    if (_awaitingSettle || _cycleRunning || _coverHeld || _turnInFlight || [self panActive]) {
-      RNCPageCurlLog(@"[page-curl] touch end while busy; staying not ready");
-      return;
-    }
-    [self markReady:@"tap without a page change"];
+    [self apply:[_machine touchEnded]];
+    [self runPendingTapTurn];
+    return;
+  }
+  if ([type isEqualToString:@"tapZones"]) {
+    _hasTapZones = [message[@"left"] isKindOfClass:[NSNumber class]] && [message[@"right"] isKindOfClass:[NSNumber class]];
+    _tapZoneLeft = [message[@"left"] doubleValue];
+    _tapZoneRight = [message[@"right"] doubleValue];
     return;
   }
   RNCPageCurlLog(@"[page-curl] unknown message type %@", type);
 }
 
-#pragma mark - readiness
+- (BOOL)busy
+{
+  return !_machine.canBeginTurn || _turnDirection != nil || [self panActive];
+}
+
+// a margin tap curls like a released flick; while busy it waits its turn, and with nothing baked to curl
+// onto it turns the page instantly the way a tap always did
+- (void)runPendingTapTurn
+{
+  NSString *direction = _pendingTapTurn;
+  if (direction == nil) {
+    return;
+  }
+  _pendingTapTurn = nil;
+  if ([self busy] || [self flightsTurnAwayFrom:direction]) {
+    [self queueTapTurn:direction];
+    return;
+  }
+  [self curlTapTurn:direction duration:[self tune:@"tapTurnDuration"]];
+}
+
+- (BOOL)flightsTurnAwayFrom:(NSString *)direction
+{
+  return _flights.count > 0 && ![_flights.firstObject.direction isEqualToString:direction];
+}
+
+- (void)curlTapTurn:(NSString *)direction duration:(CFTimeInterval)duration
+{
+  [self beginTurn:direction from:_touchObserver.startPoint];
+  if (_turnDirection != nil) {
+    RNCPageCurlLog(@"[page-curl] tap turn toward %@ in %.0fms", direction, duration * 1000);
+    [self animateFingerTo:_turnReversed ? _turnStart : [self turnedFinger] duration:duration completes:YES];
+    _animationFromRest = YES;
+    [self letTurnFlyIfTapsWait];
+    return;
+  }
+  if (![self slot:direction].hasPage) {
+    [_queuedTapTurns removeAllObjects];
+    return;
+  }
+  NSString *fn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
+  RNCPageCurlLog(@"[page-curl] tap turn toward %@ not curled (state=%@); %@", direction, RNCPageCurlStateName(_machine.state), fn);
+  [self callBridge:fn argument:nil completion:^(BOOL ok, id result) {}];
+}
+
+// a tap on the blocker while busy: a margin tap queues its turn, any other tap is dropped
+- (void)queueTapTurnAt:(CGPoint)point
+{
+  if (!_hasTapZones || _webView == nil || _hostView == nil) {
+    return;
+  }
+  CGFloat x = [_hostView convertPoint:point toView:_webView].x;
+  NSString *direction = x <= _tapZoneLeft ? RNCPageCurlSlotPrevious : x >= _tapZoneRight ? RNCPageCurlSlotNext : nil;
+  if (direction == nil) {
+    return;
+  }
+  [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+  [self queueTapTurn:direction];
+}
+
+// a tap the other way takes back the last one still waiting
+- (void)queueTapTurn:(NSString *)direction
+{
+  NSString *last = _queuedTapTurns.lastObject;
+  if (last != nil && ![last isEqualToString:direction]) {
+    [_queuedTapTurns removeLastObject];
+  } else if (_queuedTapTurns.count < RNCPageCurlMaxQueuedTapTurns) {
+    [_queuedTapTurns addObject:direction];
+  }
+  RNCPageCurlLog(@"[page-curl] tap turn toward %@ queued while %@; queue=%@", direction, RNCPageCurlStateName(_machine.state),
+                 [_queuedTapTurns componentsJoinedByString:@","]);
+  [self letTurnFlyIfTapsWait];
+}
+
+- (void)runQueuedTapTurn
+{
+  if (_queuedTapTurns.count == 0 || [self busy]) {
+    return;
+  }
+  NSString *direction = _queuedTapTurns.firstObject;
+  if ([self flightsTurnAwayFrom:direction]) {
+    return;
+  }
+  [_queuedTapTurns removeObjectAtIndex:0];
+  // the turns before it keep curling on their own, so a queued tap curls at a tap's full length
+  [self curlTapTurn:direction duration:[self tune:@"tapTurnDuration"]];
+}
+
+#pragma mark - sheets in flight
+
+// a tap is waiting to turn the same way as the turn now completing: that turn lands at once and its sheet
+// finishes curling on its own, so the next page can start curling under it
+- (void)letTurnFlyIfTapsWait
+{
+  NSString *direction = _turnDirection;
+  if (direction == nil || _animation == nil || !_animationCompletes || ![_queuedTapTurns.firstObject isEqualToString:direction]) {
+    return;
+  }
+  RNCPageCurlFlight *flight = [RNCPageCurlFlight new];
+  RNCPageCurlSheet *sheet = [RNCPageCurlSheet new];
+  sheet.page = _renderer.sheet;
+  sheet.backTexture = _renderer.sheetBackTexture;
+  sheet.backTexRect = _renderer.sheetBackTexRect;
+  sheet.mirrored = _turnMirrored;
+  sheet.curlStart = _renderer.curlStart;
+  sheet.curlFinger = _renderer.curlFinger;
+  sheet.curlRadius = _renderer.curlRadius;
+  sheet.curlBendStrength = _renderer.curlBendStrength;
+  flight.sheet = sheet;
+  flight.direction = direction;
+  flight.reversed = _turnReversed;
+  flight.underPages = _turnUnderPages ?: @[];
+  // read before the animation stops: a tap's bend forms over its own longer run
+  flight.geometry = [self turnGeometry];
+  flight.from = _animationFrom;
+  flight.to = _animationTo;
+  flight.startTime = _animationStart;
+  flight.duration = _animationDuration;
+  flight.fromRest = _animationFromRest;
+  if (_flights.count >= RNCPageCurlMaxFlights) {
+    // the oldest is the furthest along; it drops out a little early
+    [_flights removeObjectAtIndex:0];
+  }
+  [_flights addObject:flight];
+  [self stopAnimation];
+  RNCPageCurlLog(@"[page-curl] turn %@ lands now and its sheet curls on (%lu curling); queue=%@", direction, (unsigned long)_flights.count,
+                 [_queuedTapTurns componentsJoinedByString:@","]);
+  if (_flightLink == nil) {
+    _flightLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(onFlightTick:)];
+    [_flightLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+  }
+  [self finishTurnCompleted:YES];
+}
+
+- (void)onFlightTick:(CADisplayLink *)link
+{
+  CFTimeInterval now = CACurrentMediaTime();
+  NSMutableArray<RNCPageCurlFlight *> *landed = [NSMutableArray array];
+  for (RNCPageCurlFlight *flight in _flights) {
+    CGFloat t = MIN(1, (now - flight.startTime) / MAX(flight.duration, 0.01));
+    CGFloat eased = flight.fromRest ? RNCPageCurlEaseInOut(t) : RNCPageCurlEaseOut(t);
+    CGPoint finger = CGPointMake(flight.from.x + (flight.to.x - flight.from.x) * eased, flight.from.y + (flight.to.y - flight.from.y) * eased);
+    RNCPageCurlPose pose = [self poseForFinger:finger geometry:flight.geometry];
+    flight.sheet.curlStart = pose.curlStart;
+    flight.sheet.curlFinger = pose.curlFinger;
+    flight.sheet.curlRadius = pose.radius;
+    flight.sheet.curlBendStrength = pose.bendStrength;
+    if (t >= 1) {
+      [landed addObject:flight];
+    }
+  }
+  if (landed.count > 0) {
+    [_flights removeObjectsInArray:landed];
+    RNCPageCurlLog(@"[page-curl] %lu curling sheet(s) done; %lu still curling", (unsigned long)landed.count, (unsigned long)_flights.count);
+    [self composeScene];
+    [self flightsChanged];
+  }
+  [_renderer setNeedsDisplay];
+}
+
+// the last sheet done: at rest the webview shows again; a tap the other way may have been waiting for it
+- (void)flightsChanged
+{
+  if (_flights.count > 0) {
+    return;
+  }
+  [_flightLink invalidate];
+  _flightLink = nil;
+  if (_machine.state == RNCPageCurlStateIdle && _turnDirection == nil) {
+    _renderer.hidden = YES;
+  }
+  [self runQueuedTapTurn];
+}
+
+- (void)dropFlights
+{
+  if (_flights.count == 0 && _flightLink == nil) {
+    return;
+  }
+  RNCPageCurlLog(@"[page-curl] %lu curling sheet(s) dropped", (unsigned long)_flights.count);
+  [_flights removeAllObjects];
+  [_flightLink invalidate];
+  _flightLink = nil;
+  [self composeScene];
+  if (_machine.state == RNCPageCurlStateIdle && _turnDirection == nil) {
+    _renderer.hidden = YES;
+  }
+}
+
+#pragma mark - effects
+
+// carries out what the machine asked for, in order
+- (void)apply:(NSArray<RNCPageCurlEffect *> *)effects
+{
+  for (RNCPageCurlEffect *effect in effects) {
+    switch (effect.kind) {
+      case RNCPageCurlEffectEnterState:
+        [self enterState:effect.state reason:effect.reason];
+        break;
+      case RNCPageCurlEffectBake:
+        [self runBakeWithSettle:effect.settle onlyToward:effect.direction];
+        break;
+      case RNCPageCurlEffectBlankSlots:
+        [self blankAllSlots];
+        break;
+      case RNCPageCurlEffectShowLandedPage:
+        [self rotateSlotsToward:effect.direction];
+        [self showCover];
+        break;
+      case RNCPageCurlEffectShowCurrentPage:
+        [self showCover];
+        break;
+      case RNCPageCurlEffectLand:
+        [self landToward:effect.direction];
+        break;
+      case RNCPageCurlEffectRequestSettle:
+        [self requestSettleWithToken:effect.token];
+        break;
+      case RNCPageCurlEffectNote:
+        RNCPageCurlLog(@"[page-curl] %@", effect.reason);
+        break;
+    }
+  }
+}
+
+- (void)enterState:(RNCPageCurlState)state reason:(NSString *)reason
+{
+  RNCPageCurlLog(@"[page-curl] -> %@ (%@)", RNCPageCurlStateName(state), reason);
+  // both overlays follow the state: idle is the webview, bare, with touches reaching it
+  _inputBlocker.hidden = state == RNCPageCurlStateIdle;
+  if (state == RNCPageCurlStateIdle) {
+    // sheets still curling stay on screen over the page; taps go through the renderer to the webview
+    _renderer.hidden = _flights.count == 0;
+    [self emit:@"ready" direction:nil detail:reason];
+    [self beginTurnForPan];
+    if (_queuedTapTurns.count > 0) {
+      // after the effects that led here have all run
+      __weak __typeof(self) weakSelf = self;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf runQueuedTapTurn];
+      });
+    }
+  }
+}
+
+// the manager turns to the landed page the way a margin tap does; past the chunk edge that is its own chunk switch
+- (void)landToward:(NSString *)direction
+{
+  NSString *fn = [direction isEqualToString:RNCPageCurlSlotNext] ? @"instantlyScrollPageDown" : @"instantlyScrollPageUp";
+  RNCPageCurlLog(@"[page-curl] turn landed toward %@; %@", direction, fn);
+  NSUInteger teardownCount = _teardownCount;
+  __weak __typeof(self) weakSelf = self;
+  [self callBridge:fn argument:nil completion:^(BOOL ok, id result) {
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (strongSelf == nil || teardownCount != strongSelf->_teardownCount) {
+      return;
+    }
+    // the manager answers NO when it refused the turn (text selected); older content frames answer nothing
+    BOOL refused = [result isKindOfClass:[NSNumber class]] && ![result boolValue];
+    if (refused) {
+      [strongSelf->_queuedTapTurns removeAllObjects];
+    }
+    [strongSelf apply:[strongSelf->_machine landingFinished:ok && !refused]];
+  }];
+  // only the manager's settle leaves this state; say so if it has not come
+  NSUInteger serial = _machine.stateSerial;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (strongSelf != nil && strongSelf->_machine.stateSerial == serial) {
+      RNCPageCurlLog(@"[page-curl] no settle 3s after landing toward %@; still awaiting it", direction);
+    }
+  });
+}
+
+- (void)requestSettleWithToken:(NSUInteger)token
+{
+  NSUInteger teardownCount = _teardownCount;
+  __weak __typeof(self) weakSelf = self;
+  [self callBridge:@"invalidateNativePageCurl" argument:nil completion:^(BOOL ok, id result) {
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (strongSelf == nil || teardownCount != strongSelf->_teardownCount) {
+      return;
+    }
+    [strongSelf apply:[strongSelf->_machine settleRequestFinished:ok token:token]];
+  }];
+}
 
 - (BOOL)panActive
 {
   return _pan.state == UIGestureRecognizerStateBegan || _pan.state == UIGestureRecognizerStateChanged;
-}
-
-- (void)hideIfIdle
-{
-  if (_coverHeld || _turnInFlight || [self panActive]) {
-    return;
-  }
-  _renderer.hidden = YES;
-}
-
-- (void)markNotReady:(NSString *)reason
-{
-  if (_ready) {
-    RNCPageCurlLog(@"[page-curl] ready -> 0 (%@)", reason);
-  }
-  _ready = NO;
-  [self hideIfIdle];
-}
-
-- (void)markReady:(NSString *)reason
-{
-  if (!_ready) {
-    RNCPageCurlLog(@"[page-curl] ready -> 1 (%@)", reason);
-  }
-  _ready = YES;
-  [self emit:@"ready" direction:nil detail:reason];
-  [self beginTurnForPan];
 }
 
 #pragma mark - gestures
@@ -1107,16 +1411,16 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     return YES;
   }
   // the curl pan claims every drag while the curl is on, so WebKit's pans never scroll the page
-  // themselves; if the bakes are still being made the turn starts when they are ready
-  RNCPageCurlLog(@"[page-curl] pan should begin? ready=%d inFlight=%d", _ready, _turnInFlight);
-  return !_turnInFlight;
+  // themselves; if the controller is busy the turn starts once it is idle
+  RNCPageCurlLog(@"[page-curl] pan should begin? state=%@", RNCPageCurlStateName(_machine.state));
+  return _machine.state != RNCPageCurlStateAnimating;
 }
 
 // the active pan's turn, from its original touch-down: the pan's own translation restarts from zero
-// where recognition began, and a pan that began before the bakes were ready starts here once they are
+// where recognition began, and a pan that began while the controller was busy starts here once it is idle
 - (void)beginTurnForPan
 {
-  if (![self panActive] || _turnDirection != nil || _turnInFlight || _turnDeclined || !_ready) {
+  if (![self panActive] || _turnDirection != nil || _turnDeclined || !_machine.canBeginTurn) {
     return;
   }
   CGPoint touchDown = _touchObserver.startPoint;
@@ -1128,6 +1432,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   [self beginTurn:dx < 0 ? RNCPageCurlSlotNext : RNCPageCurlSlotPrevious from:touchDown];
   _turnDeclined = _turnDirection == nil;
   if (_turnDirection != nil) {
+    [_queuedTapTurns removeAllObjects];
     [self moveTurnTo:location];
   }
 }
@@ -1135,12 +1440,12 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (void)onPan:(UIPanGestureRecognizer *)pan
 {
   CGPoint location = [pan locationInView:_hostView];
-  RNCPageCurlLog(@"[page-curl] pan state=%ld location=%.1f,%.1f touchDown=%@ inFlight=%d turn=%@", (long)pan.state, location.x, location.y,
-                      NSStringFromCGPoint(_touchObserver.startPoint), _turnInFlight, _turnDirection);
+  RNCPageCurlLog(@"[page-curl] pan state=%ld location=%.1f,%.1f touchDown=%@ curlState=%@ turn=%@", (long)pan.state, location.x, location.y,
+                      NSStringFromCGPoint(_touchObserver.startPoint), RNCPageCurlStateName(_machine.state), _turnDirection);
   BOOL moving = pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged;
   if (_turnDirection == nil && moving) {
-    if (!_ready && pan.state == UIGestureRecognizerStateBegan) {
-      RNCPageCurlLog(@"[page-curl] pan began before the bakes are ready; holding the drag until they are");
+    if (!_machine.canBeginTurn && pan.state == UIGestureRecognizerStateBegan) {
+      RNCPageCurlLog(@"[page-curl] pan began while %@; holding the drag until idle", RNCPageCurlStateName(_machine.state));
     }
     [self beginTurnForPan];
     return;
@@ -1149,9 +1454,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled ||
         pan.state == UIGestureRecognizerStateFailed) {
       _turnDeclined = NO;
-      RNCPageCurlLog(@"[page-curl] pan ended without a turn (ready=%d)", _ready);
-      [self hideIfIdle];
-      [self runPendingSettle];
+      RNCPageCurlLog(@"[page-curl] pan ended without a turn (state=%@)", RNCPageCurlStateName(_machine.state));
     }
     return;
   }
@@ -1178,24 +1481,32 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     RNCPageCurlLog(@"[page-curl] no page toward %@; no curl", direction);
     return;
   }
-  if (target.texture == nil && !_edgeEmitted) {
-    _edgeEmitted = YES;
-    [self emit:@"edge" direction:direction detail:nil];
+  // a page that exists but was never baked is never curled onto: the sheet would lift onto blank paper
+  if (target.texture == nil) {
+    if (!_edgeEmitted) {
+      _edgeEmitted = YES;
+      [self emit:@"edge" direction:direction detail:nil];
+    }
+    RNCPageCurlLog(@"[page-curl] page toward %@ not baked; no curl", direction);
+    return;
+  }
+  if ([self flightsTurnAwayFrom:direction]) {
+    RNCPageCurlLog(@"[page-curl] sheets still curling toward %@; no turn toward %@ yet", _flights.firstObject.direction, direction);
+    return;
   }
   BOOL next = [direction isEqualToString:RNCPageCurlSlotNext];
   _turnDirection = direction;
   _turnReversed = !next && !_spread;
-  _turnInFlight = YES;
-  // not ready for the whole turn; a cancelled turn hands the still-valid bakes back
-  _ready = NO;
+  [self apply:[_machine turnBegan]];
   [self showTurnScene:direction];
   CGFloat width = _turnSheetRect.size.width;
   CGFloat height = _turnSheetRect.size.height;
   _turnRadiusMax = MIN([self tune:@"radiusMax"], width * [self tune:@"radiusFraction"]);
   _renderer.curlRadiusMax = _turnRadiusMax;
-  // the sheet is grabbed at its outer edge on the touch's row, wherever the touch lands, and that
-  // edge moves exactly as far as the finger does
-  _turnStart = CGPointMake(width, MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
+  // the sheet is grabbed under the finger, no closer to the spine than grabFloor of the width, and
+  // that point moves exactly as far as the finger does
+  CGFloat grabX = MIN(MAX([self localXFor:start.x], width * [self tune:@"grabFloor"]), width);
+  _turnStart = CGPointMake(grabX, MIN(MAX(start.y - _turnSheetRect.origin.y, 0), height));
   _turnRest = _turnReversed ? [self turnedFinger] : _turnStart;
   _turnTouchDown = CGPointMake([self localXFor:start.x], start.y - _turnSheetRect.origin.y);
   _turnDrag = 0;
@@ -1222,21 +1533,70 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   return CGPointMake(-_turnStart.x + skipped, _turnStart.y);
 }
 
-// the grabbed point follows the finger 1:1
+// the grabbed point moves as far as the finger does; a sheet being unfolded comes in from the spine, the
+// far side of its curl as far in as the finger has moved, wherever the finger landed
 - (void)moveTurnTo:(CGPoint)location
 {
   CGPoint local = CGPointMake([self localXFor:location.x], location.y - _turnSheetRect.origin.y);
   _turnDrag = _turnReversed ? local.x - _turnTouchDown.x : _turnTouchDown.x - local.x;
-  CGPoint finger = CGPointMake(_turnRest.x + local.x - _turnTouchDown.x, _turnRest.y + local.y - _turnTouchDown.y);
-  finger.x = MIN(MAX(finger.x, [self turnedFinger].x), _turnStart.x);
-  finger.y = MIN(MAX(finger.y, 0), _turnSheetRect.size.height);
-  [self applyFinger:finger];
+  CGFloat y = MIN(MAX(_turnRest.y + local.y - _turnTouchDown.y, 0), _turnSheetRect.size.height);
+  if (_turnReversed) {
+    [self applyFinger:CGPointMake([self unfoldingFingerWithCurlAt:MAX(_turnDrag, 0) y:y], y)];
+    return;
+  }
+  CGFloat x = MIN(MAX(_turnRest.x + local.x - _turnTouchDown.x, [self turnedFinger].x), _turnStart.x);
+  [self applyFinger:CGPointMake(x, y)];
+}
+
+// the grabbed point's position that puts the unfolding sheet's curl at x; the curl moves right as the point does
+- (CGFloat)unfoldingFingerWithCurlAt:(CGFloat)x y:(CGFloat)y
+{
+  RNCPageCurlTurnGeometry geometry = [self turnGeometry];
+  CGFloat low = [self turnedFinger].x;
+  CGFloat high = _turnStart.x;
+  for (int i = 0; i < 30; i++) {
+    CGFloat mid = (low + high) / 2;
+    RNCPageCurlPose pose = [self poseForFinger:CGPointMake(mid, y) geometry:geometry];
+    if (pose.foldX + pose.radius < x) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return (low + high) / 2;
+}
+
+- (RNCPageCurlTurnGeometry)turnGeometry
+{
+  RNCPageCurlTurnGeometry geometry;
+  geometry.start = _turnStart;
+  geometry.sheetSize = _turnSheetRect.size;
+  geometry.radiusMax = _turnRadiusMax;
+  geometry.bendIn = [self bendInDistance];
+  return geometry;
 }
 
 - (void)applyFinger:(CGPoint)finger
 {
-  CGFloat dx = MAX(_turnStart.x - finger.x, 0);
-  CGFloat dy = _turnStart.y - finger.y;
+  RNCPageCurlPose pose = [self poseForFinger:finger geometry:[self turnGeometry]];
+  _turnFinger = pose.trackedFinger;
+  _renderer.curlStart = pose.curlStart;
+  _renderer.curlFinger = pose.curlFinger;
+  _renderer.curlRadius = pose.radius;
+  _renderer.curlBendStrength = pose.bendStrength;
+  _turnFold = pose.fold;
+  RNCPageCurlLog(@"[page-curl] finger %.1f,%.1f (grab=%.1f,%.1f distance=%.1f room=%.1f foldOffset=%.1f foldX=%.1f R=%.1f fold=%.2f)",
+                      pose.finger.x, pose.finger.y, _turnStart.x, _turnStart.y, pose.distance, pose.room, pose.foldOffset, pose.foldX, pose.radius, _turnFold);
+  [_renderer setNeedsDisplay];
+}
+
+- (RNCPageCurlPose)poseForFinger:(CGPoint)finger geometry:(RNCPageCurlTurnGeometry)geometry
+{
+  CGPoint start = geometry.start;
+  CGFloat width = geometry.sheetSize.width;
+  CGFloat height = geometry.sheetSize.height;
+  CGFloat dx = MAX(start.x - finger.x, 0);
+  CGFloat dy = start.y - finger.y;
   // the tilt follows the vertical offset against the horizontal drag plus tiltSoftness, so a small
   // vertical move tilts the fold a little instead of flipping it
   CGFloat soft = MAX([self tune:@"tiltSoftness"], 0);
@@ -1250,17 +1610,17 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   CGFloat distance = MAX(dx * nx + dy * ny, 0);
   // the fold, (distance + pi R) / 2 behind the grab point along n, must leave the whole spine (local
   // x = 0) on the flat side: the tilt gives way first, then the bend flattens, then the finger is held
-  CGFloat farthest = MAX(_turnStart.y, _turnSheetRect.size.height - _turnStart.y);
-  CGFloat room = _turnStart.x * nx - fabs(ny) * farthest;
+  CGFloat farthest = MAX(start.y, height - start.y);
+  CGFloat room = start.x * nx - fabs(ny) * farthest;
   // paper lifts into its full curve as soon as it is pulled: the bend is complete bendInDistance into the drag
-  CGFloat wantedRadius = _turnRadiusMax * MIN(1, distance / MAX([self tune:@"bendInDistance"], 1));
+  CGFloat wantedRadius = geometry.radiusMax * MIN(1, distance / MAX(geometry.bendIn, 1));
   CGFloat need = (distance + M_PI * wantedRadius) / 2;
   if (need > room && fabs(ny) > 0.0005) {
     // the largest tilt that leaves room for the full bend (room falls as the tilt grows)
     CGFloat low = 0, high = fabs(ny);
     for (int i = 0; i < 30; i++) {
       CGFloat mid = (low + high) / 2;
-      CGFloat midRoom = _turnStart.x * sqrt(1 - mid * mid) - mid * farthest;
+      CGFloat midRoom = start.x * sqrt(1 - mid * mid) - mid * farthest;
       if (need > midRoom) {
         high = mid;
       } else {
@@ -1269,16 +1629,17 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
     }
     ny = copysign(low, ny);
     nx = sqrt(1 - ny * ny);
-    room = _turnStart.x * nx - fabs(ny) * farthest;
+    room = start.x * nx - fabs(ny) * farthest;
   }
   if (distance / 2 > room) {
     nx = 1;
     ny = 0;
-    room = _turnStart.x;
+    room = start.x;
     distance = MIN(distance, 2 * room);
   }
-  finger = CGPointMake(_turnStart.x - nx * distance, _turnStart.y - ny * distance);
-  _turnFinger = finger;
+  finger = CGPointMake(start.x - nx * distance, start.y - ny * distance);
+  RNCPageCurlPose pose;
+  pose.trackedFinger = finger;
   // once the fold reaches the spine the bend must flatten, which slides the sheet by pi R; settleGain
   // lets the finger drive that last phase faster so it takes fewer points of travel
   CGFloat gain = MAX([self tune:@"settleGain"], 1);
@@ -1287,23 +1648,35 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   if (foldFree < settleStart) {
     foldFree = MAX(settleStart - (settleStart - foldFree) * gain, 0);
     distance = 2 * (room - foldFree);
-    finger = CGPointMake(_turnStart.x - nx * distance, _turnStart.y - ny * distance);
+    finger = CGPointMake(start.x - nx * distance, start.y - ny * distance);
   }
   CGFloat radius = MIN(wantedRadius, MAX(2 * (room - distance / 2) / M_PI, 0));
-  // a zero drag is a flat sheet: while the bend forms, the fold starts past the outer edge and sweeps
-  // in, instead of sitting at the grab point with everything beyond it mirrored onto itself
-  CGFloat bendIn = MAX([self tune:@"bendInDistance"], 1);
-  CGFloat settle = MAX(0, 1 - distance / bendIn);
-  CGFloat foldOffset = settle * (_turnSheetRect.size.width - _turnStart.x + M_PI * radius / 2 + 4);
-  CGFloat foldX = _turnStart.x + nx * foldOffset - nx * (distance + M_PI * radius) / 2;
-  _renderer.curlStart = CGPointMake(_turnStart.x + nx * foldOffset, _turnStart.y + ny * foldOffset);
-  _renderer.curlFinger = CGPointMake(finger.x + nx * foldOffset, finger.y + ny * foldOffset);
-  _renderer.curlRadius = radius;
-  _renderer.curlBendStrength = MIN(1, distance / MAX([self tune:@"bendDarkenIn"], 1));
-  _turnFold = MIN(MAX((_turnStart.x - foldX) / MAX(_turnStart.x, 1), 0), 1);
-  RNCPageCurlLog(@"[page-curl] finger %.1f,%.1f (grab=%.1f,%.1f distance=%.1f room=%.1f foldOffset=%.1f foldX=%.1f R=%.1f fold=%.2f)",
-                      finger.x, finger.y, _turnStart.x, _turnStart.y, distance, room, foldOffset, foldX, radius, _turnFold);
-  [_renderer setNeedsDisplay];
+  // a zero drag is a flat sheet: the fold starts past the outer edge and sweeps in to the grab point
+  // at sweepGain times the finger's speed, instead of appearing at the grab point with everything
+  // beyond it already folded over
+  CGFloat beyond = width - start.x;
+  CGFloat sweepIn = MAX(MAX(geometry.bendIn, 1), beyond / MAX([self tune:@"sweepGain"], 0.01));
+  CGFloat settle = MAX(0, 1 - distance / sweepIn);
+  CGFloat foldOffset = settle * (beyond + M_PI * radius / 2 + 4);
+  CGFloat foldX = start.x + nx * foldOffset - nx * (distance + M_PI * radius) / 2;
+  pose.finger = finger;
+  pose.curlStart = CGPointMake(start.x + nx * foldOffset, start.y + ny * foldOffset);
+  pose.curlFinger = CGPointMake(finger.x + nx * foldOffset, finger.y + ny * foldOffset);
+  pose.radius = radius;
+  pose.bendStrength = MIN(1, distance / MAX([self tune:@"bendDarkenIn"], 1));
+  pose.distance = distance;
+  pose.room = room;
+  pose.foldOffset = foldOffset;
+  pose.foldX = foldX;
+  pose.fold = MIN(MAX((start.x - foldX) / MAX(start.x, 1), 0), 1);
+  return pose;
+}
+
+// a tap's turn forms its bend over a longer run than a drag does: a timed animation through the short
+// one makes the fold leap ahead of the page edge and then fall back
+- (CGFloat)bendInDistance
+{
+  return _animation != nil && _animationFromRest ? [self tune:@"tapBendInDistance"] : [self tune:@"bendInDistance"];
 }
 
 // 0 at the start of the turn, 1 when the page has fully turned
@@ -1347,6 +1720,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
   _animationStart = CACurrentMediaTime();
   _animationDuration = MAX(duration, 0.01);
   _animationCompletes = completes;
+  _animationFromRest = NO;
   _animation = [CADisplayLink displayLinkWithTarget:self selector:@selector(onAnimationTick:)];
   [_animation addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
@@ -1354,7 +1728,7 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 - (void)onAnimationTick:(CADisplayLink *)link
 {
   CGFloat t = MIN(1, (CACurrentMediaTime() - _animationStart) / _animationDuration);
-  CGFloat eased = RNCPageCurlEaseOut(t);
+  CGFloat eased = _animationFromRest ? RNCPageCurlEaseInOut(t) : RNCPageCurlEaseOut(t);
   CGPoint finger = CGPointMake(_animationFrom.x + (_animationTo.x - _animationFrom.x) * eased,
                                _animationFrom.y + (_animationTo.y - _animationFrom.y) * eased);
   [self applyFinger:finger];
@@ -1375,24 +1749,14 @@ static CGFloat RNCPageCurlEaseOut(CGFloat t)
 {
   NSString *direction = _turnDirection;
   _turnDirection = nil;
-  _turnInFlight = NO;
   _edgeEmitted = NO;
   RNCPageCurlLog(@"[page-curl] turn %@ finished completed=%d", direction, completed);
-  if (!completed) {
-    [self showCover];
-    [self hideIfIdle];
+  if (completed) {
+    [self emit:@"turn" direction:direction detail:[NSString stringWithFormat:@"from page %ld", (long)_page]];
+  } else {
     [self emit:@"cancel" direction:nil detail:nil];
-    if (_settlePending) {
-      [self runPendingSettle];
-    } else if (!_awaitingSettle && !_coverHeld) {
-      [self markReady:@"curl cancelled"];
-    }
-    return;
   }
-  [self emit:@"turn" direction:direction detail:[NSString stringWithFormat:@"from page %ld", (long)_page]];
-  [self rotateSlotsToward:direction];
-  [self showCover];
-  [self finishTurnToward:direction];
+  [self apply:[_machine turnFinishedToward:direction completed:completed]];
 }
 
 @end

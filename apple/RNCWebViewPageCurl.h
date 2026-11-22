@@ -10,7 +10,7 @@ typedef void (^RNCPageCurlEventBlock)(NSDictionary *event);
  * Apple Books-style page curl over a WKWebView. Pages are bitmaps baked with
  * takeSnapshot; a Metal renderer draws them above the webview and is hidden at
  * rest. The content frame reports settles through the "pageCurl" script message
- * handler; the controller drives the webview through window.nativePageCurl.
+ * handler; the controller drives the webview through the scrolling manager on window.s.
  * Events (logging only): touch, tap, turn, cancel, edge, settled, ready.
  */
 @interface RNCWebViewPageCurl : NSObject
