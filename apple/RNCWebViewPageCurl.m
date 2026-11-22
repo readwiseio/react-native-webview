@@ -1533,15 +1533,15 @@ typedef struct {
   return CGPointMake(-_turnStart.x + skipped, _turnStart.y);
 }
 
-// the grabbed point follows the finger 1:1; a sheet being unfolded comes in from the spine with the far
-// side of its curl under the finger
+// the grabbed point moves as far as the finger does; a sheet being unfolded comes in from the spine, the
+// far side of its curl as far in as the finger has moved, wherever the finger landed
 - (void)moveTurnTo:(CGPoint)location
 {
   CGPoint local = CGPointMake([self localXFor:location.x], location.y - _turnSheetRect.origin.y);
   _turnDrag = _turnReversed ? local.x - _turnTouchDown.x : _turnTouchDown.x - local.x;
   CGFloat y = MIN(MAX(_turnRest.y + local.y - _turnTouchDown.y, 0), _turnSheetRect.size.height);
   if (_turnReversed) {
-    [self applyFinger:CGPointMake([self unfoldingFingerWithCurlAt:local.x y:y], y)];
+    [self applyFinger:CGPointMake([self unfoldingFingerWithCurlAt:MAX(_turnDrag, 0) y:y], y)];
     return;
   }
   CGFloat x = MIN(MAX(_turnRest.x + local.x - _turnTouchDown.x, [self turnedFinger].x), _turnStart.x);
