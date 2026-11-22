@@ -12,6 +12,21 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)pageWithTexture:(nullable id<MTLTexture>)texture rect:(CGRect)rect texRect:(CGRect)texRect;
 @end
 
+// a sheet whose turn has landed while it still curls; drawn with its own curl, stacked by its layers
+@interface RNCPageCurlSheet : NSObject
+@property (nonatomic, strong, nullable) RNCPageCurlPage *page;
+@property (nonatomic, strong, nullable) id<MTLTexture> backTexture;
+@property (nonatomic, assign) CGRect backTexRect;
+@property (nonatomic, assign) BOOL mirrored;
+@property (nonatomic, assign) CGPoint curlStart;
+@property (nonatomic, assign) CGPoint curlFinger;
+@property (nonatomic, assign) CGFloat curlRadius;
+@property (nonatomic, assign) CGFloat curlBendStrength;
+// higher draws above lower: on the sheet's own side of the spine, and past it
+@property (nonatomic, assign) NSInteger layer;
+@property (nonatomic, assign) NSInteger layerPastSpine;
+@end
+
 // shading knobs, all read from the host's tuning JSON (see RNCWebViewPageCurl); widths are
 // multiples of the bend radius, strengths multiples of the shadow/highlight opacity
 typedef struct {
@@ -61,6 +76,11 @@ typedef struct {
 @property (nonatomic, assign) CGFloat curlRadiusMax;
 // 0..1 multiplier on the crease shading, ramped in by the host over the first part of the drag
 @property (nonatomic, assign) CGFloat curlBendStrength;
+// the sheet's place among the flying sheets, as RNCPageCurlSheet.layer and layerPastSpine
+@property (nonatomic, assign) NSInteger sheetLayer;
+@property (nonatomic, assign) NSInteger sheetLayerPastSpine;
+// sheets still curling after their turns landed, drawn together with the sheet above
+@property (nonatomic, copy, nullable) NSArray<RNCPageCurlSheet *> *flyingSheets;
 
 - (instancetype)initWithFrame:(CGRect)frame;
 - (nullable id<MTLTexture>)textureFromImage:(UIImage *)image;

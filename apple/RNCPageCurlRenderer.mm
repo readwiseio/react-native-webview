@@ -39,6 +39,8 @@ typedef struct {
   float riseScale;
   float tightFade;
   float backShowThrough;
+  float layer;
+  float layerPastSpine;
 } RNCPageCurlUniforms;
 
 static const char *const RNCPageCurlShaderSource = R"metal(
@@ -79,6 +81,8 @@ struct Uniforms {
   float riseScale;
   float tightFade;
   float backShowThrough;
+  float layer;
+  float layerPastSpine;
 };
 
 // shading at the fold thins out as the bend tightens: 1 at the free radius, (1 - tightFade) at a sharp crease
@@ -134,8 +138,10 @@ vertex VOut sheetVertex(uint vid [[vertex_id]],
   if (u.mirrored > 0.5) {
     rel.x = u.sheetSize.x - rel.x;
   }
+  // a layer step (0.05) is more than the highest fold (2 x the largest radius / 4000), so stacked sheets never cross
+  float layer = pos.x < 0.0 ? u.layerPastSpine : u.layer;
   VOut o;
-  o.position = clipFromView(u.sheetOrigin + rel, u.viewSize, 0.5 - z / 4000.0);
+  o.position = clipFromView(u.sheetOrigin + rel, u.viewSize, 0.5 - z / 4000.0 - layer * 0.05);
   o.uv = uv;
   o.local = p;
   o.s = s;
@@ -245,6 +251,9 @@ static simd_float4 RNCPageCurlRectFloat4(CGRect rect)
 {
   return simd_make_float4((float)rect.origin.x, (float)rect.origin.y, (float)rect.size.width, (float)rect.size.height);
 }
+
+@implementation RNCPageCurlSheet
+@end
 
 @implementation RNCPageCurlPage
 
@@ -453,19 +462,24 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
 
 #pragma mark - geometry
 
-- (RNCPageCurlUniforms)baseUniforms
+- (RNCPageCurlUniforms)uniformsWithSheetRect:(CGRect)sheetRect
+                                    mirrored:(BOOL)mirrored
+                                     curling:(BOOL)curling
+                                       start:(CGPoint)start
+                                      finger:(CGPoint)finger
+                                      radius:(CGFloat)radius
+                                bendStrength:(CGFloat)bendStrength
 {
   RNCPageCurlUniforms u;
   memset(&u, 0, sizeof(u));
   CGSize size = self.bounds.size;
   u.viewSize = simd_make_float2((float)size.width, (float)size.height);
-  CGRect sheetRect = _sheet != nil ? _sheet.rect : self.bounds;
   u.sheetOrigin = simd_make_float2((float)sheetRect.origin.x, (float)sheetRect.origin.y);
   u.sheetSize = simd_make_float2((float)sheetRect.size.width, (float)sheetRect.size.height);
-  u.mirrored = _mirrored ? 1 : 0;
-  u.curling = (_curling && _sheet != nil) ? 1 : 0;
+  u.mirrored = mirrored ? 1 : 0;
+  u.curling = curling ? 1 : 0;
   u.radiusMax = (float)MAX(_curlRadiusMax, 1);
-  u.bendStrength = (float)_curlBendStrength;
+  u.bendStrength = (float)bendStrength;
   u.castWidthFloor = _shading.castWidthFloor;
   u.castWidthPerRadius = _shading.castWidthPerRadius;
   u.castStrengthFloor = _shading.castStrengthFloor;
@@ -483,22 +497,77 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
   u.backColor = RNCPageCurlFloat4(_backColor, 1);
   u.shadowColor = RNCPageCurlFloat4(_shadowColor, _shadowOpacity);
   u.highlightColor = RNCPageCurlFloat4(_highlightColor, _highlightOpacity);
-  if (u.curling > 0) {
-    CGFloat dx = _curlStart.x - _curlFinger.x;
-    CGFloat dy = _curlStart.y - _curlFinger.y;
+  if (curling) {
+    CGFloat dx = start.x - finger.x;
+    CGFloat dy = start.y - finger.y;
     CGFloat distance = sqrt(dx * dx + dy * dy);
     simd_float2 normal = simd_make_float2(1, 0);
     if (distance > 0.5) {
       normal = simd_make_float2((float)(dx / distance), (float)(dy / distance));
     }
-    CGFloat R = _curlRadius;
     // the fold sits half way between S and its folded-over image F, plus the half turn around the cylinder
-    CGFloat foldDistance = (distance + M_PI * R) / 2.0;
-    u.axisOrigin = simd_make_float2((float)(_curlStart.x - normal.x * foldDistance), (float)(_curlStart.y - normal.y * foldDistance));
+    CGFloat foldDistance = (distance + M_PI * radius) / 2.0;
+    u.axisOrigin = simd_make_float2((float)(start.x - normal.x * foldDistance), (float)(start.y - normal.y * foldDistance));
     u.axisNormal = normal;
-    u.radius = (float)R;
+    u.radius = (float)radius;
   }
   return u;
+}
+
+- (RNCPageCurlUniforms)baseUniforms
+{
+  CGRect sheetRect = _sheet != nil ? _sheet.rect : self.bounds;
+  RNCPageCurlUniforms u = [self uniformsWithSheetRect:sheetRect
+                                             mirrored:_mirrored
+                                              curling:_curling && _sheet != nil
+                                                start:_curlStart
+                                               finger:_curlFinger
+                                               radius:_curlRadius
+                                         bendStrength:_curlBendStrength];
+  u.layer = (float)_sheetLayer;
+  u.layerPastSpine = (float)_sheetLayerPastSpine;
+  return u;
+}
+
+- (RNCPageCurlUniforms)uniformsForFlyingSheet:(RNCPageCurlSheet *)sheet
+{
+  RNCPageCurlUniforms u = [self uniformsWithSheetRect:sheet.page.rect
+                                             mirrored:sheet.mirrored
+                                              curling:YES
+                                                start:sheet.curlStart
+                                               finger:sheet.curlFinger
+                                               radius:sheet.curlRadius
+                                         bendStrength:sheet.curlBendStrength];
+  u.layer = (float)sheet.layer;
+  u.layerPastSpine = (float)sheet.layerPastSpine;
+  return u;
+}
+
+- (void)encodeSheet:(RNCPageCurlPage *)page
+               back:(nullable id<MTLTexture>)back
+        backTexRect:(CGRect)backTexRect
+           uniforms:(RNCPageCurlUniforms)u
+            encoder:(id<MTLRenderCommandEncoder>)encoder
+{
+  u.pageOrigin = u.sheetOrigin;
+  u.pageSize = u.sheetSize;
+  u.frontTexRect = RNCPageCurlRectFloat4(page.texRect);
+  u.backTexRect = RNCPageCurlRectFloat4(backTexRect);
+  u.hasFront = page.texture != nil ? 1 : 0;
+  u.hasBack = back != nil ? 1 : 0;
+  [encoder setRenderPipelineState:_pipelines.sheet];
+  // mirroring flips the winding, so the front face would read as the back
+  [encoder setFrontFacingWinding:u.mirrored > 0.5 ? MTLWindingCounterClockwise : MTLWindingClockwise];
+  [encoder setVertexBuffer:_gridVertices offset:0 atIndex:0];
+  [encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
+  [encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
+  [encoder setFragmentTexture:page.texture atIndex:0];
+  [encoder setFragmentTexture:back atIndex:1];
+  [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                      indexCount:_gridIndexCount
+                       indexType:MTLIndexTypeUInt16
+                     indexBuffer:_gridIndices
+               indexBufferOffset:0];
 }
 
 - (void)drawRect:(CGRect)rect
@@ -507,9 +576,21 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     return;
   }
   RNCPageCurlUniforms base = [self baseUniforms];
-  RNCPageCurlLog(@"[page-curl] draw S=%.0f,%.0f F=%.0f,%.0f R=%.1f axis=%.0f,%.0f n=%.2f,%.2f sheet=%@ mirrored=%d curling=%d under=%lu",
+  // the flat pages take their shadows from the sheet lying directly on them
+  RNCPageCurlUniforms shade = base;
+  if (_sheet == nil && _flyingSheets.count > 0) {
+    RNCPageCurlSheet *lowest = _flyingSheets.firstObject;
+    for (RNCPageCurlSheet *sheet in _flyingSheets) {
+      if (sheet.layer < lowest.layer) {
+        lowest = sheet;
+      }
+    }
+    shade = [self uniformsForFlyingSheet:lowest];
+  }
+  RNCPageCurlLog(@"[page-curl] draw S=%.0f,%.0f F=%.0f,%.0f R=%.1f axis=%.0f,%.0f n=%.2f,%.2f sheet=%@ mirrored=%d curling=%d under=%lu flying=%lu",
                       _curlStart.x, _curlStart.y, _curlFinger.x, _curlFinger.y, base.radius, base.axisOrigin.x, base.axisOrigin.y, base.axisNormal.x,
-                      base.axisNormal.y, NSStringFromCGRect(_sheet.rect), _mirrored, _curling, (unsigned long)_underPages.count);
+                      base.axisNormal.y, NSStringFromCGRect(_sheet.rect), _mirrored, _curling, (unsigned long)_underPages.count,
+                      (unsigned long)_flyingSheets.count);
   id<CAMetalDrawable> drawable = self.currentDrawable;
   MTLRenderPassDescriptor *pass = self.currentRenderPassDescriptor;
   if (drawable == nil || pass == nil) {
@@ -532,7 +613,7 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
   [encoder setRenderPipelineState:_pipelines.under];
   [encoder setVertexBuffer:_quadVertices offset:0 atIndex:0];
   for (RNCPageCurlPage *page in _underPages) {
-    RNCPageCurlUniforms u = base;
+    RNCPageCurlUniforms u = shade;
     u.pageOrigin = simd_make_float2((float)page.rect.origin.x, (float)page.rect.origin.y);
     u.pageSize = simd_make_float2((float)page.rect.size.width, (float)page.rect.size.height);
     u.frontTexRect = RNCPageCurlRectFloat4(page.texRect);
@@ -543,27 +624,13 @@ static RNCPageCurlPipelines RNCPageCurlSharedPipelines(id<MTLDevice> device)
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
   }
 
+  for (RNCPageCurlSheet *sheet in _flyingSheets) {
+    if (sheet.page != nil) {
+      [self encodeSheet:sheet.page back:sheet.backTexture backTexRect:sheet.backTexRect uniforms:[self uniformsForFlyingSheet:sheet] encoder:encoder];
+    }
+  }
   if (_sheet != nil) {
-    RNCPageCurlUniforms u = base;
-    u.pageOrigin = u.sheetOrigin;
-    u.pageSize = u.sheetSize;
-    u.frontTexRect = RNCPageCurlRectFloat4(_sheet.texRect);
-    u.backTexRect = RNCPageCurlRectFloat4(_sheetBackTexRect);
-    u.hasFront = _sheet.texture != nil ? 1 : 0;
-    u.hasBack = _sheetBackTexture != nil ? 1 : 0;
-    [encoder setRenderPipelineState:_pipelines.sheet];
-    // mirroring flips the winding, so the front face would read as the back
-    [encoder setFrontFacingWinding:_mirrored ? MTLWindingCounterClockwise : MTLWindingClockwise];
-    [encoder setVertexBuffer:_gridVertices offset:0 atIndex:0];
-    [encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
-    [encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
-    [encoder setFragmentTexture:_sheet.texture atIndex:0];
-    [encoder setFragmentTexture:_sheetBackTexture atIndex:1];
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                        indexCount:_gridIndexCount
-                         indexType:MTLIndexTypeUInt16
-                       indexBuffer:_gridIndices
-                 indexBufferOffset:0];
+    [self encodeSheet:_sheet back:_sheetBackTexture backTexRect:_sheetBackTexRect uniforms:base encoder:encoder];
   }
 
   [encoder endEncoding];
